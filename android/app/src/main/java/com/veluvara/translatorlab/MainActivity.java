@@ -23,6 +23,12 @@ import java.util.*;
 /** Foreground translator: ML Kit text translation and system TTS. */
 public class MainActivity extends Activity {
     private LinearLayout body;
+    private MqttDiagnostics diagnostics;
+    private TextView mqttStatus;
+    private boolean visible=false, testing=false;
+    private Translator diagnosticTranslator;
+    private final android.os.Handler diagnosticHandler=new android.os.Handler(android.os.Looper.getMainLooper());
+    private Runnable diagnosticTimeout;
     private TextView status;
     private EditText text;
     private Spinner languages, voices, sourceLanguage;
@@ -48,7 +54,7 @@ public class MainActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         body = new LinearLayout(this); body.setOrientation(LinearLayout.VERTICAL); body.setPadding(32,64,32,32);
         scroll.addView(body); setContentView(scroll);
-        label("Translator · переводчик 0.2");
+        label("Translator · переводчик 0.3");
         label("Перевод текста на телефоне. Для первого перевода нужны языковые модели Google; загрузка по Wi-Fi. История текста не сохраняется.");
         label("С какого языка");
         sourceLanguage=new Spinner(this); sourceLanguage.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,tags)); body.addView(sourceLanguage);
@@ -84,6 +90,22 @@ public class MainActivity extends Activity {
             status.setText(!file.exists() || file.delete() ? "Образец удалён" : "Не удалось удалить файл");
         });
         status=label("Инициализация голоса…");
+        label("Удалённая самопроверка MQTT");
+        label("Только при открытом приложении. Проверяет модели и тестовую фразу, не включает микрофон и не передаёт ваши тексты.");
+        mqttStatus=label("MQTT выключен");
+        EditText mqttUser=new EditText(this); mqttUser.setHint("Имя MQTT"); mqttUser.setText(prefs.getString("mqtt_user","translator-phone")); body.addView(mqttUser);
+        EditText mqttPassword=new EditText(this); mqttPassword.setHint("Пароль (пусто — оставить сохранённый)");
+        mqttPassword.setInputType(129); mqttPassword.setSaveEnabled(false); body.addView(mqttPassword);
+        button("Сохранить и включить MQTT", () -> {
+            try {
+                String password=mqttPassword.getText().toString();
+                if(!password.isEmpty()) SecretStore.save(this,password);
+                if(SecretStore.load(this).isEmpty()) { mqttStatus.setText("Введите пароль MQTT"); return; }
+                prefs.edit().putString("mqtt_user",mqttUser.getText().toString().trim()).putBoolean("mqtt_enabled",true).apply();
+                mqttPassword.setText(""); stopDiagnostics(); startDiagnostics();
+            } catch(Exception e) { mqttStatus.setText("Не удалось сохранить доступ в Android Keystore"); }
+        });
+        button("Выключить MQTT", () -> { prefs.edit().putBoolean("mqtt_enabled",false).apply(); stopDiagnostics(); mqttStatus.setText("MQTT выключен"); });
         languages.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             public void onNothingSelected(AdapterView<?> parent) {}
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
@@ -110,6 +132,58 @@ public class MainActivity extends Activity {
             if(ready) loadVoices(); else status.setText("Системная озвучка недоступна");
         });
     }
+    private void startDiagnostics() {
+        if(!visible || diagnostics!=null || !prefs.getBoolean("mqtt_enabled",false)) return;
+        try {
+            String password=SecretStore.load(this);
+            if(password.isEmpty()) { mqttStatus.setText("Нужен пароль MQTT"); return; }
+            diagnostics=new MqttDiagnostics(prefs.getString("mqtt_user","translator-phone"),password,
+                message -> runOnUiThread(() -> { if(visible) mqttStatus.setText(message); }),
+                id -> runOnUiThread(() -> selfTest(id)));
+        } catch(Exception e) { mqttStatus.setText("Сохранённый доступ недоступен; введите пароль повторно"); }
+    }
+    private void stopDiagnostics() {
+        if(diagnostics!=null) { diagnostics.close(); diagnostics=null; }
+        if(diagnosticTimeout!=null) diagnosticHandler.removeCallbacks(diagnosticTimeout);
+        if(diagnosticTranslator!=null) { diagnosticTranslator.close(); diagnosticTranslator=null; }
+        testing=false;
+    }
+    private void selfTest(String id) {
+        if(!visible || diagnostics==null) return;
+        final MqttDiagnostics channel=diagnostics;
+        final org.json.JSONObject report=new org.json.JSONObject();
+        try {
+            report.put("request_id",id).put("version","0.3.0-preview").put("timestamp",System.currentTimeMillis()/1000)
+                .put("tts_ready",ready).put("offline_voices_for_target",available.size()).put("microphone_tested",false);
+            if(testing || translating || recording) { report.put("status","busy"); channel.reply(report); return; }
+        } catch(org.json.JSONException e) { return; }
+        testing=true;
+        final boolean[] done={false};
+        final java.util.function.Consumer<String> finish=result -> {
+            if(done[0] || !visible || diagnostics!=channel) return; done[0]=true; testing=false;
+            if(diagnosticTimeout!=null) diagnosticHandler.removeCallbacks(diagnosticTimeout);
+            if(diagnosticTranslator!=null) { diagnosticTranslator.close(); diagnosticTranslator=null; }
+            if(!visible || diagnostics!=channel) return;
+            try { report.put("status",result); channel.reply(report); mqttStatus.setText("Самопроверка: "+result); } catch(Exception ignored) {}
+        };
+        diagnosticTimeout=() -> finish.accept("timeout"); diagnosticHandler.postDelayed(diagnosticTimeout,20000);
+        com.google.mlkit.common.model.RemoteModelManager.getInstance().getDownloadedModels(TranslateRemoteModel.class)
+            .addOnSuccessListener(models -> {
+                if(done[0] || !visible || diagnostics!=channel) return;
+                java.util.Set<String> installed=new java.util.TreeSet<>(); for(TranslateRemoteModel model:models) installed.add(model.getLanguage());
+                try { report.put("installed_models",new org.json.JSONArray(installed)); } catch(Exception ignored) {}
+                if(!installed.contains("ru") || !installed.contains("de")) { finish.accept("models_missing"); return; }
+                diagnosticTranslator=Translation.getClient(new TranslatorOptions.Builder().setSourceLanguage("ru").setTargetLanguage("de").build());
+                final long start=android.os.SystemClock.elapsedRealtime();
+                diagnosticTranslator.translate("Здравствуйте. Где находится вокзал?").addOnSuccessListener(result -> {
+                    if(done[0] || !visible || diagnostics!=channel) return;
+                    try { report.put("translation_ms",android.os.SystemClock.elapsedRealtime()-start).put("result_nonempty",!result.trim().isEmpty()); } catch(Exception ignored) {}
+                    finish.accept(result.trim().isEmpty()?"empty_result":(ready && !available.isEmpty()?"ok":"limited"));
+                }).addOnFailureListener(error -> finish.accept("translation_error"));
+            }).addOnFailureListener(error -> finish.accept("models_error"));
+    }
+    @Override protected void onStart() { super.onStart(); visible=true; startDiagnostics(); }
+    @Override protected void onStop() { visible=false; stopDiagnostics(); super.onStop(); }
     private String tag() { return tags[languages.getSelectedItemPosition()]; }
     private TextView label(String value) { TextView v=new TextView(this); v.setText(value); v.setTextSize(18); v.setPadding(0,12,0,12); body.addView(v); return v; }
     private void button(String title,Runnable action) { Button b=new Button(this); b.setText(title); body.addView(b); b.setOnClickListener(v -> action.run()); }

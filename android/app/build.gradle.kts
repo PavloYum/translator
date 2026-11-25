@@ -6,10 +6,12 @@ android {
         applicationId = "com.veluvara.translatorlab"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0-preview"
+        versionCode = 3
+        versionName = "0.3.0-preview"
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
 }
 
 dependencies { implementation("com.google.mlkit:translate:17.0.3") }
+
+dependencies { implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5") }

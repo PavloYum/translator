@@ -2,6 +2,7 @@
 
 | Версия | Содержимое | Скачать |
 |---|---|---|
+| 0.3.0-preview | MQTT-самопроверка без личных данных | [APK](https://github.com/PavloYum/translator/releases/download/v0.3.0-preview/translator-0.3.0-preview.apk) |
 | 0.2.0-preview | Перевод текста RU/DE/EN, системный голосовой ввод, TTS | [APK](https://github.com/PavloYum/translator/releases/download/v0.2.0-preview/translator-0.2.0-preview.apk) |
 | 0.1.0-experiment | Аудиолаборатория: микрофон и TTS, без перевода | [APK](https://github.com/PavloYum/translator/releases/download/v0.1.0-experiment/translator-lab-0.1.0-debug.apk) |
 
