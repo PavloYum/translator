@@ -2,6 +2,13 @@ package com.veluvara.translatorlab;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.Intent;
+import android.speech.RecognizerIntent;
+import android.text.Editable;
+import android.text.TextWatcher;
+import com.google.mlkit.common.model.DownloadConditions;
+import com.google.mlkit.nl.translate.*;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.media.*;
@@ -13,12 +20,18 @@ import java.io.*;
 import java.nio.*;
 import java.util.*;
 
-/** Foreground-only measurement lab. No network permission or cloud integration. */
+/** Foreground translator: ML Kit text translation and system TTS. */
 public class MainActivity extends Activity {
     private LinearLayout body;
     private TextView status;
     private EditText text;
-    private Spinner languages, voices;
+    private Spinner languages, voices, sourceLanguage;
+    private TextView output, translationStatus;
+    private CheckBox mobileModels;
+    private Translator translator;
+    private long generation = 0;
+    private boolean translating = false;
+    private int speechLanguage;
     private SeekBar rate, pitch;
     private TextToSpeech tts;
     private boolean ready = false;
@@ -35,15 +48,35 @@ public class MainActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         body = new LinearLayout(this); body.setOrientation(LinearLayout.VERTICAL); body.setPadding(32,64,32,32);
         scroll.addView(body); setContentView(scroll);
-        label("Translator · аудиолаборатория");
-        label("Локальная проверка микрофона и озвучки. Перевод пока не подключён. Запись до 60 секунд, только при открытом приложении.");
+        label("Translator · переводчик 0.2");
+        label("Перевод текста на телефоне. Для первого перевода нужны языковые модели Google; загрузка по Wi-Fi. История текста не сохраняется.");
+        label("С какого языка");
+        sourceLanguage=new Spinner(this); sourceLanguage.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,tags)); body.addView(sourceLanguage);
+        label("На какой язык");
         languages = new Spinner(this); languages.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, tags)); body.addView(languages);
-        voices = new Spinner(this); body.addView(voices);
-        text = new EditText(this); text.setText(examples[0]); text.setMinLines(2); body.addView(text);
+        languages.setSelection(1);
+        voices = new Spinner(this);
+        text = new EditText(this); text.setText(examples[0]); text.setMinLines(2); text.setSaveEnabled(false); body.addView(text);
+        text.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(3000)});
+        button("Сказать фразу", this::dictate);
+        mobileModels=new CheckBox(this); mobileModels.setText("Разрешить загрузку моделей через мобильный интернет"); body.addView(mobileModels);
+        button("Перевести с Google", this::translate);
+        button("Поменять направление", () -> { int from=sourceLanguage.getSelectedItemPosition(), to=languages.getSelectedItemPosition(); sourceLanguage.setSelection(to); languages.setSelection(from); });
+        translationStatus=label("Введите или продиктуйте текст (до 3000 символов)");
+        output=label(""); output.setTextIsSelectable(true); output.setSaveEnabled(false);
+        ImageView attribution=new ImageView(this); attribution.setImageResource(com.veluvara.translatorlab.R.drawable.google_translate_attribution);
+        attribution.setAdjustViewBounds(true); attribution.setContentDescription("Powered by Google Translate");
+        body.addView(attribution,new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT,LinearLayout.LayoutParams.WRAP_CONTENT));
+        label("Машинный перевод Google Translate через ML Kit. Возможны ошибки.");
+        button("О переводе и конфиденциальности", () -> new AlertDialog.Builder(this).setTitle("О переводе")
+            .setMessage("Текст переводится на телефоне через Google ML Kit. Модели загружаются из Google; SDK может отправлять служебные сведения. Голосовой ввод обрабатывает системный сервис, который может использовать интернет. Историю текста приложение не сохраняет.\n\nhttps://cloud.google.com/translate\n\nTHIS SERVICE MAY CONTAIN TRANSLATIONS POWERED BY GOOGLE. GOOGLE DISCLAIMS ALL WARRANTIES RELATED TO THE TRANSLATIONS, EXPRESS OR IMPLIED, INCLUDING ANY WARRANTIES OF ACCURACY, RELIABILITY, AND ANY IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.")
+            .setPositiveButton("Закрыть",null).show());
+        label("Озвучка результата"); body.addView(voices);
         rate = slider("Скорость", "rate"); pitch = slider("Высота тона", "pitch");
-        button("Прослушать", this::speak);
-        button("Остановить", () -> { if(tts!=null) tts.stop(); recording=false; });
+        button("Озвучить перевод", this::speak);
+        button("Остановить", () -> { if(tts!=null) tts.stop(); recording=false; invalidateTranslation(); translationStatus.setText("Остановлено. Загрузка модели может продолжиться в фоне."); });
         button("Сбросить настройки голоса", () -> { rate.setProgress(50); pitch.setProgress(50); });
+        label("Аудиолаборатория — запись WAV для проверки");
         button("Записать образец", this::record);
         button("Удалить образец", () -> {
             if(worker!=null && worker.isAlive()) { status.setText("Сначала остановите запись"); return; }
@@ -54,7 +87,7 @@ public class MainActivity extends Activity {
         languages.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             public void onNothingSelected(AdapterView<?> parent) {}
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if(tts!=null) tts.stop(); text.setText(examples[position]); loadVoices();
+                invalidateTranslation(); loadVoices();
             }
         });
         voices.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -62,6 +95,15 @@ public class MainActivity extends Activity {
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
                 if(position<available.size()) prefs.edit().putString(tag()+"voice", available.get(position).getName()).apply();
             }
+        });
+        sourceLanguage.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            public void onNothingSelected(AdapterView<?> p) {}
+            public void onItemSelected(AdapterView<?> p,View v,int pos,long id) { invalidateTranslation(); }
+        });
+        text.addTextChangedListener(new TextWatcher() {
+            public void beforeTextChanged(CharSequence s,int start,int count,int after) {}
+            public void onTextChanged(CharSequence s,int start,int before,int count) { invalidateTranslation(); }
+            public void afterTextChanged(Editable e) {}
         });
         tts=new TextToSpeech(this, result -> {
             ready=result==TextToSpeech.SUCCESS;
@@ -92,16 +134,79 @@ public class MainActivity extends Activity {
         String selected=prefs.getString(tag()+"voice","");
         voices.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,names));
         for(int i=0;i<names.size();i++) if(names.get(i).equals(selected)) voices.setSelection(i);
-        status.setText(available.isEmpty()?"Установите офлайн-голос этого языка в настройках Android":"Голос готов. Данные не отправляются в облако приложением.");
+        status.setText(available.isEmpty()?"Установите офлайн-голос этого языка в настройках Android":"Выбран голос без требования сети. Проверьте звучание на телефоне.");
     }
     private void speak() {
         if(recording) { status.setText("Сначала остановите запись"); return; }
+        if(output.getText().length()==0) { status.setText("Сначала переведите фразу"); return; }
         if(!ready || available.isEmpty()) { status.setText("Нет доступного голоса"); return; }
         int choice=voices.getSelectedItemPosition(); if(choice<0 || choice>=available.size()) return;
         if(tts.setVoice(available.get(choice))==TextToSpeech.ERROR || tts.setSpeechRate(0.5f+rate.getProgress()/100f)==TextToSpeech.ERROR || tts.setPitch(0.5f+pitch.getProgress()/100f)==TextToSpeech.ERROR) {
             status.setText("Движок не принял настройки"); return;
         }
-        if(tts.speak(text.getText().toString(),TextToSpeech.QUEUE_FLUSH,null,"preview")==TextToSpeech.ERROR) status.setText("Не удалось воспроизвести голос");
+        if(tts.speak(output.getText().toString(),TextToSpeech.QUEUE_FLUSH,null,"preview")==TextToSpeech.ERROR) status.setText("Не удалось воспроизвести голос");
+    }
+    private void invalidateTranslation() {
+        generation++; translating=false;
+        if(tts!=null) tts.stop();
+        if(output!=null) output.setText("");
+        if(translationStatus!=null) translationStatus.setText("Готов к переводу");
+        if(translator!=null) { translator.close(); translator=null; }
+    }
+    private void translate() {
+        if(recording) { translationStatus.setText("Сначала остановите запись"); return; }
+        if(translating) return;
+        String input=text.getText().toString().trim();
+        if(input.isEmpty()) { translationStatus.setText("Введите текст"); return; }
+        invalidateTranslation();
+        int from=sourceLanguage.getSelectedItemPosition(),to=languages.getSelectedItemPosition();
+        if(from==to) { output.setText(input); translationStatus.setText("Выбран один язык — текст без перевода"); return; }
+        final long request= generation;
+        translating=true;
+        Translator client=Translation.getClient(new TranslatorOptions.Builder()
+            .setSourceLanguage(tags[from].substring(0,2)).setTargetLanguage(tags[to].substring(0,2)).build());
+        translator=client;
+        DownloadConditions.Builder conditions=new DownloadConditions.Builder();
+        if(!mobileModels.isChecked()) conditions.requireWifi();
+        translationStatus.setText("Проверка/загрузка моделей… При первом запуске подключитесь к Wi-Fi.");
+        client.downloadModelIfNeeded(conditions.build()).addOnSuccessListener(v -> {
+            if(request!=generation || isDestroyed()) return;
+            translationStatus.setText("Перевод…");
+            final long started=android.os.SystemClock.elapsedRealtime();
+            client.translate(input).addOnSuccessListener(result -> {
+                if(request!=generation || isDestroyed()) return;
+                output.setText(result); translating=false;
+                translationStatus.setText("Переведено на телефоне за "+(android.os.SystemClock.elapsedRealtime()-started)+" мс (без загрузки моделей)");
+            }).addOnFailureListener(error -> translationFailed(request));
+        }).addOnFailureListener(error -> translationFailed(request));
+    }
+    private void translationFailed(long request) {
+        if(request!=generation || isDestroyed()) return;
+        translating=false;
+        translationStatus.setText("Перевод не выполнен. Проверьте интернет для загрузки моделей и свободное место; затем повторите.");
+    }
+    private void dictate() {
+        if(recording) { status.setText("Сначала остановите запись WAV"); return; }
+        new AlertDialog.Builder(this).setTitle("Голосовой ввод Android")
+            .setMessage("Системный сервис распознавания может передать речь своему провайдеру. Офлайн-режим зависит от телефона. Продолжить?")
+            .setNegativeButton("Отмена",null).setPositiveButton("Продолжить",(dialog,which) -> {
+                if(tts!=null) tts.stop(); invalidateTranslation();
+                speechLanguage=sourceLanguage.getSelectedItemPosition();
+                Intent intent=new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+                intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+                intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE,tags[speechLanguage]);
+                intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE,true);
+                intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS,1);
+                try { startActivityForResult(intent,20); }
+                catch(android.content.ActivityNotFoundException e) { status.setText("Голосовой ввод не установлен. Можно ввести текст вручную."); }
+            }).show();
+    }
+    @Override protected void onActivityResult(int request,int result,Intent data) {
+        super.onActivityResult(request,result,data);
+        if(request==20 && result==RESULT_OK && data!=null && speechLanguage==sourceLanguage.getSelectedItemPosition()) {
+            ArrayList<String> phrases=data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+            if(phrases!=null && !phrases.isEmpty()) { text.setText(phrases.get(0)); translationStatus.setText("Проверьте распознанную фразу и нажмите «Перевести»"); }
+        }
     }
     private void record() {
         if(worker!=null && worker.isAlive()) return;
@@ -132,5 +237,5 @@ public class MainActivity extends Activity {
         },"audio-capture"); worker.start();
     }
     @Override protected void onPause() { recording=false; if(tts!=null) tts.stop(); super.onPause(); }
-    @Override protected void onDestroy() { recording=false; if(tts!=null) tts.shutdown(); super.onDestroy(); }
+    @Override protected void onDestroy() { recording=false; invalidateTranslation(); if(tts!=null) tts.shutdown(); super.onDestroy(); }
 }

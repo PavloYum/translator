@@ -3,8 +3,8 @@
 Отдельный проект Android-переводчика с серверным шлюзом на Raspberry Pi 5.
 Дата создания: 23 ноября 2026. Исходное ТЗ хранится локально и не входит в публичный репозиторий.
 
-**Стадия: первый этап — аудиолаборатория. Исходники Android и локальные Python-тесты созданы; debug APK собран и прошёл Android Lint; облачный перевод не подключён.**
-Ничего не развёрнуто на Pi, платные API не подключены, существующие сервисы не изменены.
+**Стадия: 0.2.0-preview — текстовый перевод RU/DE/EN на телефоне, системный голосовой ввод и озвучка. Серверный облачный конвейер пока не подключён.**
+Сервер перевода на Pi не развёрнут, платные API не подключены. Языковые модели загружаются на телефон.
 
 - [Анализ требований и рисков](docs/ANALYSIS.md)
 - [Предлагаемая архитектура](docs/ARCHITECTURE.md)
@@ -42,6 +42,8 @@
 
 ## Скачать
 
-[APK 0.1.0-experiment](https://github.com/PavloYum/translator/releases/download/v0.1.0-experiment/translator-lab-0.1.0-debug.apk) · [Все версии](downloads/README.md)
+[APK 0.2.0-preview](https://github.com/PavloYum/translator/releases/download/v0.2.0-preview/translator-0.2.0-preview.apk) · [Все версии](downloads/README.md)
 
-Это аудиолаборатория, а не готовый переводчик.
+[Инструкция 0.2](downloads/0.2.0-preview/README.md). Непрерывный синхронный перевод и фоновое слушание ещё не реализованы.
+
+Текстовый перевод использует Google Translate через ML Kit: https://cloud.google.com/translate.
