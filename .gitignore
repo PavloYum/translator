@@ -1,0 +1,21 @@
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+*.pem
+*.key
+local.properties
+.gradle/
+**/build/
+.idea/
+.venv/
+__pycache__/
+.pytest_cache/
+data/
+recordings/
+models/
+*.apk
+# The supplied specification is retained locally, not published by default.
+docs/source/
+!downloads/**/*.apk
