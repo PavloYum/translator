@@ -22,13 +22,13 @@ import java.util.*;
 
 /** Foreground translator: ML Kit text translation and system TTS. */
 public class MainActivity extends Activity {
+    static volatile boolean UI_VISIBLE=false;
     private LinearLayout body;
-    private MqttDiagnostics diagnostics;
-    private TextView mqttStatus;
-    private boolean visible=false, testing=false;
-    private Translator diagnosticTranslator;
-    private final android.os.Handler diagnosticHandler=new android.os.Handler(android.os.Looper.getMainLooper());
-    private Runnable diagnosticTimeout;
+    private TextView mqttStatus, diagnosticReport, connectionBadge;
+    private final java.util.List<View> pages=new java.util.ArrayList<>();
+    private final java.util.List<Button> tabs=new java.util.ArrayList<>();
+    private SharedPreferences.OnSharedPreferenceChangeListener preferenceListener;
+    private static final int INK=0xff183c36, GREEN=0xff246b61, MUTED=0xff5f746d, BG=0xfff3f6f4;
     private TextView status;
     private EditText text;
     private Spinner languages, voices, sourceLanguage;
@@ -49,144 +49,104 @@ public class MainActivity extends Activity {
     private List<Voice> available = new ArrayList<>();
 
     @Override public void onCreate(Bundle state) {
-        super.onCreate(state);
-        prefs = getSharedPreferences("voice", MODE_PRIVATE);
-        ScrollView scroll = new ScrollView(this);
-        body = new LinearLayout(this); body.setOrientation(LinearLayout.VERTICAL); body.setPadding(32,64,32,32);
-        scroll.addView(body); setContentView(scroll);
-        label("Translator · переводчик 0.3");
-        label("Перевод текста на телефоне. Для первого перевода нужны языковые модели Google; загрузка по Wi-Fi. История текста не сохраняется.");
-        label("С какого языка");
-        sourceLanguage=new Spinner(this); sourceLanguage.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,tags)); body.addView(sourceLanguage);
-        label("На какой язык");
-        languages = new Spinner(this); languages.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, tags)); body.addView(languages);
-        languages.setSelection(1);
-        voices = new Spinner(this);
-        text = new EditText(this); text.setText(examples[0]); text.setMinLines(2); text.setSaveEnabled(false); body.addView(text);
-        text.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(3000)});
-        button("Сказать фразу", this::dictate);
-        mobileModels=new CheckBox(this); mobileModels.setText("Разрешить загрузку моделей через мобильный интернет"); body.addView(mobileModels);
-        button("Перевести с Google", this::translate);
-        button("Поменять направление", () -> { int from=sourceLanguage.getSelectedItemPosition(), to=languages.getSelectedItemPosition(); sourceLanguage.setSelection(to); languages.setSelection(from); });
-        translationStatus=label("Введите или продиктуйте текст (до 3000 символов)");
-        output=label(""); output.setTextIsSelectable(true); output.setSaveEnabled(false);
-        ImageView attribution=new ImageView(this); attribution.setImageResource(com.veluvara.translatorlab.R.drawable.google_translate_attribution);
-        attribution.setAdjustViewBounds(true); attribution.setContentDescription("Powered by Google Translate");
-        body.addView(attribution,new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT,LinearLayout.LayoutParams.WRAP_CONTENT));
-        label("Машинный перевод Google Translate через ML Kit. Возможны ошибки.");
-        button("О переводе и конфиденциальности", () -> new AlertDialog.Builder(this).setTitle("О переводе")
-            .setMessage("Текст переводится на телефоне через Google ML Kit. Модели загружаются из Google; SDK может отправлять служебные сведения. Голосовой ввод обрабатывает системный сервис, который может использовать интернет. Историю текста приложение не сохраняет.\n\nhttps://cloud.google.com/translate\n\nTHIS SERVICE MAY CONTAIN TRANSLATIONS POWERED BY GOOGLE. GOOGLE DISCLAIMS ALL WARRANTIES RELATED TO THE TRANSLATIONS, EXPRESS OR IMPLIED, INCLUDING ANY WARRANTIES OF ACCURACY, RELIABILITY, AND ANY IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.")
-            .setPositiveButton("Закрыть",null).show());
-        label("Озвучка результата"); body.addView(voices);
-        rate = slider("Скорость", "rate"); pitch = slider("Высота тона", "pitch");
-        button("Озвучить перевод", this::speak);
-        button("Остановить", () -> { if(tts!=null) tts.stop(); recording=false; invalidateTranslation(); translationStatus.setText("Остановлено. Загрузка модели может продолжиться в фоне."); });
-        button("Сбросить настройки голоса", () -> { rate.setProgress(50); pitch.setProgress(50); });
-        label("Аудиолаборатория — запись WAV для проверки");
-        button("Записать образец", this::record);
-        button("Удалить образец", () -> {
-            if(worker!=null && worker.isAlive()) { status.setText("Сначала остановите запись"); return; }
-            File file=new File(getFilesDir(), "sample.wav");
-            status.setText(!file.exists() || file.delete() ? "Образец удалён" : "Не удалось удалить файл");
-        });
-        status=label("Инициализация голоса…");
-        label("Удалённая самопроверка MQTT");
-        label("Только при открытом приложении. Проверяет модели и тестовую фразу, не включает микрофон и не передаёт ваши тексты.");
-        mqttStatus=label("MQTT выключен");
-        EditText mqttUser=new EditText(this); mqttUser.setHint("Имя MQTT"); mqttUser.setText(prefs.getString("mqtt_user","translator-phone")); body.addView(mqttUser);
-        EditText mqttPassword=new EditText(this); mqttPassword.setHint("Пароль (пусто — оставить сохранённый)");
-        mqttPassword.setInputType(129); mqttPassword.setSaveEnabled(false); body.addView(mqttPassword);
-        button("Сохранить и включить MQTT", () -> {
+        super.onCreate(state); prefs=getSharedPreferences("voice",MODE_PRIVATE);
+        LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setBackgroundColor(BG);setContentView(root);
+        root.setOnApplyWindowInsetsListener((view,insets) -> { view.setPadding(insets.getSystemWindowInsetLeft(),insets.getSystemWindowInsetTop(),insets.getSystemWindowInsetRight(),insets.getSystemWindowInsetBottom());return insets.consumeSystemWindowInsets(); });
+        LinearLayout header=new LinearLayout(this);header.setOrientation(LinearLayout.VERTICAL);header.setPadding(dp(22),dp(16),dp(22),dp(10));root.addView(header);body=header;
+        TextView brand=label("TRANSLATOR  /  0.4");brand.setTextSize(12);brand.setLetterSpacing(.13f);brand.setTextColor(GREEN);
+        TextView title=label("Понимать друг друга");title.setTextSize(27);title.setTypeface(null,android.graphics.Typeface.BOLD);
+        connectionBadge=label("Связь с Pi выключена");connectionBadge.setTextSize(13);
+        android.widget.FrameLayout container=new android.widget.FrameLayout(this);root.addView(container,new LinearLayout.LayoutParams(-1,0,1));
+        LinearLayout translatePage=page(container);body=translatePage;
+        LinearLayout direction=card(translatePage);body=direction;
+        smallTitle("НАПРАВЛЕНИЕ");
+        LinearLayout pair=new LinearLayout(this);pair.setOrientation(LinearLayout.HORIZONTAL);direction.addView(pair);
+        String[] names={"Русский","Deutsch","English"};
+        sourceLanguage=new Spinner(this);languages=new Spinner(this);
+        for(Spinner spinner:new Spinner[]{sourceLanguage,languages}) { spinner.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,names));pair.addView(spinner,new LinearLayout.LayoutParams(0,dp(52),1)); }
+        sourceLanguage.setSelection(prefs.getInt("source_index",0));languages.setSelection(prefs.getInt("target_index",1));
+        button("⇄  Поменять языки", () -> { int a=sourceLanguage.getSelectedItemPosition(),b=languages.getSelectedItemPosition();sourceLanguage.setSelection(b);languages.setSelection(a); });
+        LinearLayout input=card(translatePage);body=input;smallTitle("ВАША ФРАЗА");
+        text=new EditText(this);text.setTextSize(19);text.setTextColor(INK);text.setHint("Введите текст или скажите фразу…");text.setMinLines(3);text.setGravity(android.view.Gravity.TOP);text.setSaveEnabled(false);text.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(3000)});input.addView(text,new LinearLayout.LayoutParams(-1,-2));
+        button("Сказать фразу",this::dictate);primary("Перевести с Google",this::translate);
+        translationStatus=label("Первый перевод потребует загрузки моделей");translationStatus.setTextSize(13);translationStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        LinearLayout result=card(translatePage);body=result;smallTitle("ПЕРЕВОД");output=label("");output.setHint("Здесь появится перевод");output.setHintTextColor(MUTED);output.setTextSize(23);output.setMinHeight(dp(76));output.setTextIsSelectable(true);output.setSaveEnabled(false);
+        ImageView attribution=new ImageView(this);attribution.setImageResource(R.drawable.google_translate_attribution);attribution.setAdjustViewBounds(true);attribution.setContentDescription("Powered by Google Translate");result.addView(attribution,new LinearLayout.LayoutParams(-2,-2));
+        primary("Озвучить перевод",this::speak);
+        button("Копировать перевод",() -> { if(output.length()>0) { ((android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(android.content.ClipData.newPlainText("Перевод",output.getText()));Toast.makeText(this,"Перевод скопирован",Toast.LENGTH_SHORT).show(); } });
+        button("Остановить",() -> { if(tts!=null) tts.stop();recording=false;invalidateTranslation();translationStatus.setText("Остановлено"); });
+        label("Перевод выполняется на телефоне. Голосовой ввод может использовать интернет.").setTextSize(13);
+
+        LinearLayout piPage=page(container);body=piPage;
+        LinearLayout health=card(piPage);body=health;smallTitle("СВЯЗЬ С RASPBERRY PI");mqttStatus=label("");mqttStatus.setTextSize(21);mqttStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        label("Связь остаётся включённой при переходе в чат. Постоянное уведомление показывает, что сервис работает.").setTextSize(15);
+        primary("Запустить самопроверку",() -> { if(prefs.getBoolean("mqtt_enabled",false)) startDiagnostics(DiagnosticsService.TEST);else mqttStatus.setText("Сначала включите связь в настройках"); });
+        button("Отключить фоновую связь",this::stopDiagnostics);
+        LinearLayout report=card(piPage);body=report;smallTitle("ПОСЛЕДНЯЯ САМОПРОВЕРКА");diagnosticReport=label("Проверок пока нет");diagnosticReport.setTextSize(16);
+        label("Проверяются модели RU → DE, готовность голоса и выполнение тестового перевода. Микрофон и динамик удалённо не включаются.").setTextSize(14);
+        button("Настройки работы в фоне",() -> { try { startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,android.net.Uri.parse("package:"+getPackageName()))); } catch(Exception e) { Toast.makeText(this,"Откройте настройки Android → Приложения → Translator",Toast.LENGTH_LONG).show(); } });
+        label("На Xiaomi разрешите уведомления и фоновую работу. После принудительной остановки или перезагрузки откройте Translator снова.").setTextSize(14);
+
+        LinearLayout settingsPage=page(container);
+        LinearLayout voiceCard=card(settingsPage);body=voiceCard;smallTitle("ГОЛОС ПЕРЕВОДА");voices=new Spinner(this);voiceCard.addView(voices,new LinearLayout.LayoutParams(-1,dp(52)));
+        rate=slider("Скорость","rate");pitch=slider("Высота тона","pitch");button("Сбросить голосовые настройки",() -> {rate.setProgress(50);pitch.setProgress(50);});label("Голос, скорость и тон сохраняются отдельно для каждого языка.").setTextSize(13);
+        LinearLayout models=card(settingsPage);body=models;smallTitle("ЯЗЫКОВЫЕ МОДЕЛИ");mobileModels=new CheckBox(this);mobileModels.setText("Разрешить загрузку через мобильный интернет");mobileModels.setTextColor(INK);models.addView(mobileModels);label("По умолчанию модели загружаются через Wi-Fi. После загрузки текстовый перевод доступен без сети.").setTextSize(14);
+        LinearLayout access=card(settingsPage);body=access;smallTitle("ДОСТУП К PI");
+        EditText mqttUser=new EditText(this);mqttUser.setText(prefs.getString("mqtt_user","translator-phone"));mqttUser.setHint("Имя MQTT");mqttUser.setSingleLine(true);access.addView(mqttUser);
+        EditText mqttPassword=new EditText(this);mqttPassword.setHint("Пароль · пусто = сохранённый");mqttPassword.setInputType(129);mqttPassword.setSaveEnabled(false);access.addView(mqttPassword);
+        primary("Сохранить и включить связь",() -> {
             try {
-                String password=mqttPassword.getText().toString();
-                if(!password.isEmpty()) SecretStore.save(this,password);
-                if(SecretStore.load(this).isEmpty()) { mqttStatus.setText("Введите пароль MQTT"); return; }
-                prefs.edit().putString("mqtt_user",mqttUser.getText().toString().trim()).putBoolean("mqtt_enabled",true).apply();
-                mqttPassword.setText(""); stopDiagnostics(); startDiagnostics();
-            } catch(Exception e) { mqttStatus.setText("Не удалось сохранить доступ в Android Keystore"); }
+                if(mqttPassword.length()>0) SecretStore.save(this,mqttPassword.getText().toString());
+                if(SecretStore.load(this).isEmpty()) {Toast.makeText(this,"Введите пароль MQTT",Toast.LENGTH_LONG).show();return;}
+                prefs.edit().putString("mqtt_user",mqttUser.getText().toString().trim()).putBoolean("mqtt_enabled",true).apply();mqttPassword.setText("");
+                requestNotifications();startDiagnostics(DiagnosticsService.RECONNECT);showPage(1);
+            } catch(Exception e) { Toast.makeText(this,"Не удалось сохранить доступ",Toast.LENGTH_LONG).show(); }
         });
-        button("Выключить MQTT", () -> { prefs.edit().putBoolean("mqtt_enabled",false).apply(); stopDiagnostics(); mqttStatus.setText("MQTT выключен"); });
-        languages.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            public void onNothingSelected(AdapterView<?> parent) {}
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                invalidateTranslation(); loadVoices();
-            }
-        });
-        voices.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            public void onNothingSelected(AdapterView<?> parent) {}
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if(position<available.size()) prefs.edit().putString(tag()+"voice", available.get(position).getName()).apply();
-            }
-        });
-        sourceLanguage.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            public void onNothingSelected(AdapterView<?> p) {}
-            public void onItemSelected(AdapterView<?> p,View v,int pos,long id) { invalidateTranslation(); }
-        });
-        text.addTextChangedListener(new TextWatcher() {
-            public void beforeTextChanged(CharSequence s,int start,int count,int after) {}
-            public void onTextChanged(CharSequence s,int start,int before,int count) { invalidateTranslation(); }
-            public void afterTextChanged(Editable e) {}
-        });
-        tts=new TextToSpeech(this, result -> {
-            ready=result==TextToSpeech.SUCCESS;
-            if(ready) loadVoices(); else status.setText("Системная озвучка недоступна");
-        });
+        LinearLayout lab=card(settingsPage);body=lab;smallTitle("АУДИОЛАБОРАТОРИЯ");button("Записать WAV · до 60 секунд",this::record);button("Удалить запись",() -> { if(worker!=null && worker.isAlive()) {status.setText("Сначала остановите запись");return;} File f=new File(getFilesDir(),"sample.wav");status.setText(!f.exists()||f.delete()?"Запись удалена":"Ошибка удаления"); });button("Остановить запись",() -> recording=false);
+        button("О переводе и конфиденциальности",() -> new AlertDialog.Builder(this).setTitle("О приложении")
+            .setMessage("Текстовый перевод: Google Translate через ML Kit (cloud.google.com/translate). Модели загружаются из Google. SDK может передавать служебные сведения. Системный голосовой ввод может использовать облако. История текста не сохраняется. MQTT передаёт только технический отчёт. Микрофон и динамик в фоне не включаются.\n\nTHIS SERVICE MAY CONTAIN TRANSLATIONS POWERED BY GOOGLE. GOOGLE DISCLAIMS ALL WARRANTIES RELATED TO THE TRANSLATIONS, EXPRESS OR IMPLIED, INCLUDING ANY WARRANTIES OF ACCURACY, RELIABILITY, AND ANY IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.")
+            .setPositiveButton("Понятно",null).show());
+        body=root;status=label("Инициализация голоса…");status.setTextSize(12);status.setMaxLines(2);status.setPadding(dp(20),dp(4),dp(20),dp(4));status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        LinearLayout nav=new LinearLayout(this);nav.setPadding(dp(12),dp(6),dp(12),dp(6));root.addView(nav);
+        String[] tabNames={"Перевод","Связь с Pi","Настройки"};for(int i=0;i<3;i++){ final int index=i;Button tab=new Button(this);tab.setText(tabNames[i]);tab.setTextSize(12);tab.setAllCaps(false);nav.addView(tab,new LinearLayout.LayoutParams(0,dp(54),1));tabs.add(tab);tab.setOnClickListener(v -> showPage(index)); }
+        showPage(0);
+        if(prefs.getBoolean("mqtt_enabled",false) && !prefs.getBoolean("notification_asked",false))requestNotifications();
+        languages.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int pos,long id){prefs.edit().putInt("target_index",pos).apply();invalidateTranslation();loadVoices();}});
+        sourceLanguage.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int pos,long id){prefs.edit().putInt("source_index",pos).apply();invalidateTranslation();}});
+        voices.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int pos,long id){if(pos<available.size()) prefs.edit().putString(tag()+"voice",available.get(pos).getName()).apply();}});
+        text.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int c,int f){}public void onTextChanged(CharSequence s,int a,int b,int c){invalidateTranslation();}public void afterTextChanged(Editable e){}});
+        preferenceListener=(shared,key) -> { if(key!=null && key.startsWith("mqtt_")) runOnUiThread(this::refreshDiagnostics); };prefs.registerOnSharedPreferenceChangeListener(preferenceListener);refreshDiagnostics();
+        tts=new TextToSpeech(this,resultCode -> {ready=resultCode==TextToSpeech.SUCCESS;if(ready)loadVoices();else status.setText("Системный голос недоступен");});
     }
-    private void startDiagnostics() {
-        if(!visible || diagnostics!=null || !prefs.getBoolean("mqtt_enabled",false)) return;
-        try {
-            String password=SecretStore.load(this);
-            if(password.isEmpty()) { mqttStatus.setText("Нужен пароль MQTT"); return; }
-            diagnostics=new MqttDiagnostics(prefs.getString("mqtt_user","translator-phone"),password,
-                message -> runOnUiThread(() -> { if(visible) mqttStatus.setText(message); }),
-                id -> runOnUiThread(() -> selfTest(id)));
-        } catch(Exception e) { mqttStatus.setText("Сохранённый доступ недоступен; введите пароль повторно"); }
+    private int dp(int value){return Math.round(value*getResources().getDisplayMetrics().density);}
+    private android.graphics.drawable.GradientDrawable background(int color,int radius){android.graphics.drawable.GradientDrawable d=new android.graphics.drawable.GradientDrawable();d.setColor(color);d.setCornerRadius(dp(radius));return d;}
+    private LinearLayout page(android.widget.FrameLayout container){ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);container.addView(scroll,new android.widget.FrameLayout.LayoutParams(-1,-1));pages.add(scroll);LinearLayout content=new LinearLayout(this);content.setOrientation(LinearLayout.VERTICAL);content.setPadding(dp(16),dp(6),dp(16),dp(18));scroll.addView(content);return content;}
+    private LinearLayout card(LinearLayout parent){LinearLayout c=new LinearLayout(this);c.setOrientation(LinearLayout.VERTICAL);c.setPadding(dp(18),dp(12),dp(18),dp(16));c.setBackground(background(0xffffffff,22));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.bottomMargin=dp(14);parent.addView(c,lp);return c;}
+    private void showPage(int index){for(int i=0;i<pages.size();i++){pages.get(i).setVisibility(i==index?View.VISIBLE:View.GONE);Button tab=tabs.get(i);tab.setTextColor(i==index?0xffffffff:GREEN);tab.setBackground(background(i==index?GREEN:0xffe4ece7,16));tab.setSelected(i==index);}}
+    private TextView label(String value){TextView v=new TextView(this);v.setText(value);v.setTextColor(INK);v.setTextSize(17);v.setLineSpacing(dp(3),1);v.setPadding(0,dp(6),0,dp(6));body.addView(v);return v;}
+    private void smallTitle(String title){TextView v=label(title);v.setTextColor(MUTED);v.setTextSize(11);v.setLetterSpacing(.1f);}
+    private void button(String title,Runnable action){makeButton(title,action,false);}
+    private void primary(String title,Runnable action){makeButton(title,action,true);}
+    private void makeButton(String title,Runnable action,boolean primary){Button b=new Button(this);b.setText(title);b.setTextSize(15);b.setAllCaps(false);b.setTextColor(primary?0xffffffff:GREEN);b.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x33246b61),background(primary?GREEN:0xffedf3ef,14),null));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.topMargin=dp(8);b.setMinHeight(dp(50));body.addView(b,lp);b.setOnClickListener(v -> action.run());}
+    private String tag(){return tags[languages.getSelectedItemPosition()];}
+    private void requestNotifications(){prefs.edit().putBoolean("notification_asked",true).apply();if(android.os.Build.VERSION.SDK_INT>=33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},22);}
+    private void startDiagnostics(String action){
+        if(!prefs.getBoolean("mqtt_enabled",false))return;
+        try{startForegroundService(new Intent(this,DiagnosticsService.class).setAction(action));}
+        catch(Exception e){prefs.edit().putString("mqtt_status","Не удалось запустить фоновую связь. Откройте приложение и попробуйте снова.").apply();}
     }
-    private void stopDiagnostics() {
-        if(diagnostics!=null) { diagnostics.close(); diagnostics=null; }
-        if(diagnosticTimeout!=null) diagnosticHandler.removeCallbacks(diagnosticTimeout);
-        if(diagnosticTranslator!=null) { diagnosticTranslator.close(); diagnosticTranslator=null; }
-        testing=false;
+    private void stopDiagnostics(){prefs.edit().putBoolean("mqtt_enabled",false).putString("mqtt_status","Связь выключена").apply();stopService(new Intent(this,DiagnosticsService.class));refreshDiagnostics();}
+    private void refreshDiagnostics(){
+        boolean enabled=prefs.getBoolean("mqtt_enabled",false);String connection=enabled?prefs.getString("mqtt_status","Ожидание подключения…"):"Связь выключена";
+        mqttStatus.setText(connection);connectionBadge.setText(enabled?"●  "+connection:"○  Связь с Pi выключена");
+        String raw=prefs.getString("mqtt_report","");if(raw.isEmpty())return;
+        try{org.json.JSONObject r=new org.json.JSONObject(raw);String state=r.optString("status");String summary=state.equals("ok")?"Проверка пройдена":state.equals("limited")?"Перевод работает · проверьте голос":state.equals("models_missing")?"Нужно загрузить модели RU и DE":"Результат: "+state;
+            String when=java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT,java.text.DateFormat.SHORT).format(new java.util.Date(prefs.getLong("mqtt_report_at",0)));
+            diagnosticReport.setText(summary+"\n"+when+"\nМодели: "+r.optString("installed_models","—")+"\nГолос: "+(r.optBoolean("tts_ready")?"готов":"не готов")+(r.has("translation_ms")?"\nПеревод: "+r.optLong("translation_ms")+" мс":""));
+        }catch(Exception ignored){}
     }
-    private void selfTest(String id) {
-        if(!visible || diagnostics==null) return;
-        final MqttDiagnostics channel=diagnostics;
-        final org.json.JSONObject report=new org.json.JSONObject();
-        try {
-            report.put("request_id",id).put("version","0.3.0-preview").put("timestamp",System.currentTimeMillis()/1000)
-                .put("tts_ready",ready).put("offline_voices_for_target",available.size()).put("microphone_tested",false);
-            if(testing || translating || recording) { report.put("status","busy"); channel.reply(report); return; }
-        } catch(org.json.JSONException e) { return; }
-        testing=true;
-        final boolean[] done={false};
-        final java.util.function.Consumer<String> finish=result -> {
-            if(done[0] || !visible || diagnostics!=channel) return; done[0]=true; testing=false;
-            if(diagnosticTimeout!=null) diagnosticHandler.removeCallbacks(diagnosticTimeout);
-            if(diagnosticTranslator!=null) { diagnosticTranslator.close(); diagnosticTranslator=null; }
-            if(!visible || diagnostics!=channel) return;
-            try { report.put("status",result); channel.reply(report); mqttStatus.setText("Самопроверка: "+result); } catch(Exception ignored) {}
-        };
-        diagnosticTimeout=() -> finish.accept("timeout"); diagnosticHandler.postDelayed(diagnosticTimeout,20000);
-        com.google.mlkit.common.model.RemoteModelManager.getInstance().getDownloadedModels(TranslateRemoteModel.class)
-            .addOnSuccessListener(models -> {
-                if(done[0] || !visible || diagnostics!=channel) return;
-                java.util.Set<String> installed=new java.util.TreeSet<>(); for(TranslateRemoteModel model:models) installed.add(model.getLanguage());
-                try { report.put("installed_models",new org.json.JSONArray(installed)); } catch(Exception ignored) {}
-                if(!installed.contains("ru") || !installed.contains("de")) { finish.accept("models_missing"); return; }
-                diagnosticTranslator=Translation.getClient(new TranslatorOptions.Builder().setSourceLanguage("ru").setTargetLanguage("de").build());
-                final long start=android.os.SystemClock.elapsedRealtime();
-                diagnosticTranslator.translate("Здравствуйте. Где находится вокзал?").addOnSuccessListener(result -> {
-                    if(done[0] || !visible || diagnostics!=channel) return;
-                    try { report.put("translation_ms",android.os.SystemClock.elapsedRealtime()-start).put("result_nonempty",!result.trim().isEmpty()); } catch(Exception ignored) {}
-                    finish.accept(result.trim().isEmpty()?"empty_result":(ready && !available.isEmpty()?"ok":"limited"));
-                }).addOnFailureListener(error -> finish.accept("translation_error"));
-            }).addOnFailureListener(error -> finish.accept("models_error"));
-    }
-    @Override protected void onStart() { super.onStart(); visible=true; startDiagnostics(); }
-    @Override protected void onStop() { visible=false; stopDiagnostics(); super.onStop(); }
-    private String tag() { return tags[languages.getSelectedItemPosition()]; }
-    private TextView label(String value) { TextView v=new TextView(this); v.setText(value); v.setTextSize(18); v.setPadding(0,12,0,12); body.addView(v); return v; }
-    private void button(String title,Runnable action) { Button b=new Button(this); b.setText(title); body.addView(b); b.setOnClickListener(v -> action.run()); }
+    @Override protected void onStart(){super.onStart();UI_VISIBLE=true;startDiagnostics("");refreshDiagnostics();}
+    @Override protected void onStop(){UI_VISIBLE=false;super.onStop();}
     private SeekBar slider(String title,String key) {
         TextView caption=label(title+": 1.00"); SeekBar s=new SeekBar(this); s.setMax(150); s.setProgress(50); body.addView(s);
         s.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -311,5 +271,5 @@ public class MainActivity extends Activity {
         },"audio-capture"); worker.start();
     }
     @Override protected void onPause() { recording=false; if(tts!=null) tts.stop(); super.onPause(); }
-    @Override protected void onDestroy() { recording=false; invalidateTranslation(); if(tts!=null) tts.shutdown(); super.onDestroy(); }
+    @Override protected void onDestroy() { recording=false; invalidateTranslation(); if(tts!=null) tts.shutdown(); if(preferenceListener!=null) prefs.unregisterOnSharedPreferenceChangeListener(preferenceListener);super.onDestroy(); }
 }

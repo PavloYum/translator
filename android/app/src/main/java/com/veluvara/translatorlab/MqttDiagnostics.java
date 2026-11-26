@@ -8,7 +8,7 @@ import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.function.Consumer;
 
-/** Foreground-only, TLS-verified, narrow diagnostic channel. */
+/** Service-owned, TLS-verified, narrow diagnostic channel. */
 final class MqttDiagnostics {
     static final String ROOT="translator/v1/phone1";
     private final ScheduledExecutorService io=Executors.newSingleThreadScheduledExecutor();
@@ -24,6 +24,7 @@ final class MqttDiagnostics {
             try {
                 if(client==null) {
                     client=new MqttClient("wss://mqtt.velu-vara.com:443/mqtt","translator-"+UUID.randomUUID(),new MemoryPersistence());
+                    client.setTimeToWait(15000);
                     client.setCallback(new MqttCallback() {
                         public void connectionLost(Throwable cause) { if(active) status.accept("MQTT: связь потеряна, повтор через 30 секунд"); }
                         public void deliveryComplete(IMqttDeliveryToken token) {}
@@ -45,7 +46,7 @@ final class MqttDiagnostics {
                     client.connect(options);
                     if(!active) return;
                     client.subscribe(ROOT+"/cmd",1);
-                    status.accept("MQTT подключён. Самопроверка доступна, пока открыт экран приложения.");
+                    status.accept("MQTT подключён · самопроверка доступна в фоне");
                 }
             } catch(Exception e) { try { if(client!=null && client.isConnected()) client.disconnect(1000); } catch(Exception ignored) {} if(active) status.accept("MQTT: нет соединения. Проверьте доступ и интернет; повтор через 30 секунд."); }
         },0,30,TimeUnit.SECONDS);
@@ -61,7 +62,10 @@ final class MqttDiagnostics {
     void close() {
         active=false;
         io.execute(() -> {
-            if(client!=null) try { if(client.isConnected()) client.disconnect(1000); client.close(); } catch(Exception ignored) {}
+            if(client!=null) {
+                try { if(client.isConnected()) client.disconnect(1000); } catch(Exception ignored) {}
+                try { if(client.isConnected()) client.disconnectForcibly(1000,1000,false); client.close(); } catch(Exception ignored) {}
+            }
         });
         io.shutdown();
     }

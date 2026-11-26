@@ -9,7 +9,7 @@ from pathlib import Path
 import paho.mqtt.client as mqtt
 
 ROOT='translator/v1/phone1'
-ALLOWED={'request_id','version','timestamp','status','tts_ready','offline_voices_for_target','microphone_tested','installed_models','translation_ms','result_nonempty'}
+ALLOWED={'background_service','app_visible','voice_target','request_id','version','timestamp','status','tts_ready','offline_voices_for_target','microphone_tested','installed_models','translation_ms','result_nonempty'}
 
 def main():
     p=argparse.ArgumentParser()

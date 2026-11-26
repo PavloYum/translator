@@ -1,11 +1,13 @@
-# MQTT diagnostics 0.3
+# MQTT diagnostics 0.4
 
 Phone: `wss://mqtt.velu-vara.com:443/mqtt`, user `translator-phone`.
 Password is provisioned separately, never embedded in APK or this repository.
 Enter it under «Удалённая самопроверка MQTT» and press «Сохранить и включить MQTT».
 The saved password is encrypted by an Android Keystore AES-GCM key. Android backup
-is disabled. MQTT is opt-in and runs only while the Activity is visible; stop/leave
-closes the connection. This is not an always-on background health monitor.
+is disabled. MQTT is opt-in and owned by a foreground service with a persistent notification.
+Leaving the Activity keeps the connection. Stop from UI/notification disables it.
+Force-stop/reboot requires opening the app again; Doze/OEM restrictions may delay
+network. See docs/BACKGROUND.md.
 
 Pi requester (credentials remain outside Git):
 ```sh
@@ -52,3 +54,6 @@ mkdir -p android/build/guard-tests
 javac -d android/build/guard-tests android/app/src/main/java/com/veluvara/translatorlab/CommandGuard.java android/app/src/testStandalone/CommandGuardTest.java
 java -cp android/build/guard-tests com.veluvara.translatorlab.CommandGuardTest
 ```
+
+Version 0.4 adds background_service, app_visible, voice_target (de) report fields.
+The last diagnostic report is retained privately for the UI; no personal text.
