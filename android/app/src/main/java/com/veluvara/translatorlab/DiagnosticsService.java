@@ -74,7 +74,7 @@ public final class DiagnosticsService extends Service {
     private void selfTest(String id,boolean remote) {
         if(!alive) return;
         JSONObject report=new JSONObject();
-        try { report.put("request_id",id).put("version","0.6.0-preview").put("timestamp",System.currentTimeMillis()/1000)
+        try { report.put("request_id",id).put("version","0.6.1-preview").put("timestamp",System.currentTimeMillis()/1000)
             .put("tts_ready",ready).put("offline_voices_for_target",offlineVoices()).put("voice_target","de")
             .put("microphone_tested",false).put("background_service",true).put("app_visible",MainActivity.UI_VISIBLE);
             if(testing) { report.put("status","busy"); if(remote && mqtt!=null) mqtt.reply(report); return; }

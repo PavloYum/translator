@@ -36,7 +36,7 @@ public class MainActivity extends Activity {
     private CheckBox mobileModels;
     private Switch automatic;
     private CheckBox autoSpeak;
-    private Button conversationButton;
+    private ImageButton conversationButton;
     private android.speech.SpeechRecognizer recognizer;
     private boolean conversation=false;
     private long recognitionEpoch=0, utteranceEpoch=0;
@@ -64,7 +64,7 @@ public class MainActivity extends Activity {
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setBackgroundColor(BG);setContentView(root);
         root.setOnApplyWindowInsetsListener((view,insets) -> { view.setPadding(insets.getSystemWindowInsetLeft(),insets.getSystemWindowInsetTop(),insets.getSystemWindowInsetRight(),insets.getSystemWindowInsetBottom());return insets.consumeSystemWindowInsets(); });
         LinearLayout header=new LinearLayout(this);header.setOrientation(LinearLayout.VERTICAL);header.setPadding(dp(22),dp(16),dp(22),dp(10));root.addView(header);body=header;
-        TextView brand=label("TRANSLATOR  /  0.6");brand.setTextSize(12);brand.setLetterSpacing(.13f);brand.setTextColor(GREEN);
+        TextView brand=label("TRANSLATOR  /  0.6.1");brand.setTextSize(12);brand.setLetterSpacing(.13f);brand.setTextColor(GREEN);
         TextView title=label("Понимать друг друга");title.setTextSize(27);title.setTypeface(null,android.graphics.Typeface.BOLD);
         connectionBadge=label("Связь с Pi выключена");connectionBadge.setTextSize(13);
         android.widget.FrameLayout container=new android.widget.FrameLayout(this);root.addView(container,new LinearLayout.LayoutParams(-1,0,1));
@@ -80,9 +80,10 @@ public class MainActivity extends Activity {
         LinearLayout input=card(translatePage);body=input;smallTitle("ВАША ФРАЗА");
         text=new EditText(this);text.setTextSize(19);text.setTextColor(INK);text.setHint("Введите текст или скажите фразу…");text.setMinLines(3);text.setGravity(android.view.Gravity.TOP);text.setSaveEnabled(false);text.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(3000)});input.addView(text,new LinearLayout.LayoutParams(-1,-2));
         automatic=new Switch(this);automatic.setText("Переводить автоматически");automatic.setTextColor(INK);automatic.setChecked(prefs.getBoolean("auto_translate",true));input.addView(automatic);
-        conversationButton=new Button(this);conversationButton.setText("Начать разговор");conversationButton.setAllCaps(false);input.addView(conversationButton,new LinearLayout.LayoutParams(-1,dp(56)));conversationButton.setOnClickListener(v -> {if(conversation){stopConversation();invalidateTranslation();status.setText("Разговор остановлен");}else requestConversation();});
-        label("Разговор: слушаю → перевожу → озвучиваю → слушаю снова. Работает, пока приложение открыто.").setTextSize(13);
-        button("Одна фраза",this::dictate);primary("Перевести с Google",this::translate);
+        conversationButton=iconAction("Начать разговор",R.drawable.action_mic,() -> {if(conversation){stopConversation();invalidateTranslation();status.setText("Разговор остановлен");}else requestConversation();});
+        iconAction("Одна фраза",R.drawable.action_mic,this::dictate);
+        iconAction("Перевести с Google",R.drawable.action_translate,this::translate);
+        label("Микрофон слева — режим разговора. Удерживайте значок для подсказки.").setTextSize(13);
         translationStatus=label("Первый перевод потребует загрузки моделей");translationStatus.setTextSize(13);translationStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         LinearLayout result=card(translatePage);body=result;smallTitle("ПЕРЕВОД");output=label("");output.setHint("Здесь появится перевод");output.setHintTextColor(MUTED);output.setTextSize(23);output.setMinHeight(dp(76));output.setTextIsSelectable(true);output.setSaveEnabled(false);
         ImageView attribution=new ImageView(this);attribution.setImageResource(R.drawable.google_translate_attribution);attribution.setAdjustViewBounds(true);attribution.setContentDescription("Powered by Google Translate");result.addView(attribution,new LinearLayout.LayoutParams(-2,-2));
@@ -90,6 +91,7 @@ public class MainActivity extends Activity {
         primary("Озвучить перевод",this::speak);
         button("Копировать перевод",() -> { if(output.length()>0) { ((android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(android.content.ClipData.newPlainText("Перевод",output.getText()));Toast.makeText(this,"Перевод скопирован",Toast.LENGTH_SHORT).show(); } });
         button("Остановить",() -> { stopConversation(); if(tts!=null) tts.stop();recording=false;invalidateTranslation();translationStatus.setText("Остановлено"); });
+        iconAction("Поделиться переводом",R.drawable.action_share,() -> {if(output.length()>0){Intent share=new Intent(Intent.ACTION_SEND);share.setType("text/plain");share.putExtra(Intent.EXTRA_TEXT,output.getText().toString());startActivity(Intent.createChooser(share,"Поделиться переводом"));}});
         label("Перевод выполняется на телефоне. Голосовой ввод может использовать интернет.").setTextSize(13);
 
         LinearLayout piPage=page(container);body=piPage;
@@ -148,7 +150,35 @@ public class MainActivity extends Activity {
     private void smallTitle(String title){TextView v=label(title);v.setTextColor(MUTED);v.setTextSize(11);v.setLetterSpacing(.1f);}
     private void button(String title,Runnable action){makeButton(title,action,false);}
     private void primary(String title,Runnable action){makeButton(title,action,true);}
-    private void makeButton(String title,Runnable action,boolean primary){Button b=new Button(this);b.setText(title);b.setTextSize(15);b.setAllCaps(false);b.setTextColor(primary?0xffffffff:GREEN);b.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x33246b61),background(primary?GREEN:0xffedf3ef,14),null));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.topMargin=dp(8);b.setMinHeight(dp(50));body.addView(b,lp);b.setOnClickListener(v -> action.run());}
+    private void makeButton(String title,Runnable action,boolean primary){
+        int icon=R.drawable.action_settings;
+        if(title.contains("языки"))icon=R.drawable.action_swap;
+        else if(title.contains("Озвучить"))icon=R.drawable.action_speaker;
+        else if(title.contains("Копировать"))icon=R.drawable.action_copy;
+        else if(title.contains("Остановить") || title.contains("Отключить"))icon=R.drawable.action_stop;
+        else if(title.contains("самопроверку") || title.contains("Сохранить"))icon=R.drawable.action_check;
+        else if(title.contains("Сбросить"))icon=R.drawable.action_refresh;
+        else if(title.contains("Записать"))icon=R.drawable.action_mic;
+        else if(title.contains("Удалить"))icon=R.drawable.action_trash;
+        else if(title.contains("конфиденциальности"))icon=R.drawable.action_info;
+        iconAction(title,icon,action);
+    }
+    private ImageButton iconAction(String title,int icon,Runnable action){
+        LinearLayout row=null;
+        if(body.getChildCount()>0){View last=body.getChildAt(body.getChildCount()-1);if("actions".equals(last.getTag()) && ((LinearLayout)last).getChildCount()<4)row=(LinearLayout)last;}
+        if(row==null){row=new LinearLayout(this);row.setTag("actions");row.setOrientation(LinearLayout.HORIZONTAL);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,dp(52));lp.topMargin=dp(6);body.addView(row,lp);}
+        ImageButton button=new ImageButton(this);button.setImageResource(icon);button.setImageTintList(android.content.res.ColorStateList.valueOf(MUTED));button.setPadding(dp(12),dp(12),dp(12),dp(12));
+        button.setContentDescription(title);button.setTooltipText(title);button.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x33246b61),background(android.graphics.Color.TRANSPARENT,24),null));
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(dp(48),dp(48));lp.rightMargin=dp(12);row.addView(button,lp);button.setOnClickListener(v -> action.run());return button;
+    }
+    private void updateConversationIcon(boolean active){
+        if(conversationButton==null)return;
+        String title=active?"Остановить разговор":"Начать разговор";
+        conversationButton.setContentDescription(title);conversationButton.setTooltipText(title);conversationButton.setSelected(active);
+        conversationButton.setImageResource(active?R.drawable.action_stop:R.drawable.action_mic);
+        conversationButton.setImageTintList(android.content.res.ColorStateList.valueOf(active?0xffffffff:MUTED));
+        conversationButton.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x33246b61),background(active?GREEN:android.graphics.Color.TRANSPARENT,24),null));
+    }
     private String tag(){return tags[languages.getSelectedItemPosition()];}
     private void requestNotifications(){prefs.edit().putBoolean("notification_asked",true).apply();if(android.os.Build.VERSION.SDK_INT>=33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},22);}
     private void startDiagnostics(String action){
@@ -279,7 +309,7 @@ public class MainActivity extends Activity {
     }
     private void stopConversation() {
         conversation=false;pauseRecognition();
-        if(conversationButton!=null)conversationButton.setText("Начать разговор");
+        updateConversationIcon(false);
         getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     }
     private void requestConversation() {
@@ -292,7 +322,7 @@ public class MainActivity extends Activity {
         if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO},23);return;}
         if(!android.speech.SpeechRecognizer.isRecognitionAvailable(this)){status.setText("Установите системный сервис распознавания речи");return;}
         invalidateTranslation();automatic.setChecked(true);conversation=true;
-        conversationButton.setText("Остановить разговор");
+        updateConversationIcon(true);
         getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         scheduleListening();
     }
