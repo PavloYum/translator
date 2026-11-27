@@ -6,8 +6,8 @@ android {
         applicationId = "com.veluvara.translatorlab"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.6.1-preview"
+        versionCode = 8
+        versionName = "0.6.2-preview"
     }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
 }
