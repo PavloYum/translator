@@ -34,6 +34,10 @@ public class MainActivity extends Activity {
     private Spinner languages, voices, sourceLanguage;
     private TextView output, translationStatus;
     private CheckBox mobileModels;
+    private Switch automatic;
+    private final android.os.Handler autoHandler=new android.os.Handler(android.os.Looper.getMainLooper());
+    private boolean resumed=false, autoPending=false;
+    private final Runnable autoTranslate=() -> { if(resumed && autoPending && automatic.isChecked()) { autoPending=false; translate(); } };
     private Translator translator;
     private long generation = 0;
     private boolean translating = false;
@@ -53,7 +57,7 @@ public class MainActivity extends Activity {
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setBackgroundColor(BG);setContentView(root);
         root.setOnApplyWindowInsetsListener((view,insets) -> { view.setPadding(insets.getSystemWindowInsetLeft(),insets.getSystemWindowInsetTop(),insets.getSystemWindowInsetRight(),insets.getSystemWindowInsetBottom());return insets.consumeSystemWindowInsets(); });
         LinearLayout header=new LinearLayout(this);header.setOrientation(LinearLayout.VERTICAL);header.setPadding(dp(22),dp(16),dp(22),dp(10));root.addView(header);body=header;
-        TextView brand=label("TRANSLATOR  /  0.4");brand.setTextSize(12);brand.setLetterSpacing(.13f);brand.setTextColor(GREEN);
+        TextView brand=label("TRANSLATOR  /  0.5");brand.setTextSize(12);brand.setLetterSpacing(.13f);brand.setTextColor(GREEN);
         TextView title=label("Понимать друг друга");title.setTextSize(27);title.setTypeface(null,android.graphics.Typeface.BOLD);
         connectionBadge=label("Связь с Pi выключена");connectionBadge.setTextSize(13);
         android.widget.FrameLayout container=new android.widget.FrameLayout(this);root.addView(container,new LinearLayout.LayoutParams(-1,0,1));
@@ -68,6 +72,7 @@ public class MainActivity extends Activity {
         button("⇄  Поменять языки", () -> { int a=sourceLanguage.getSelectedItemPosition(),b=languages.getSelectedItemPosition();sourceLanguage.setSelection(b);languages.setSelection(a); });
         LinearLayout input=card(translatePage);body=input;smallTitle("ВАША ФРАЗА");
         text=new EditText(this);text.setTextSize(19);text.setTextColor(INK);text.setHint("Введите текст или скажите фразу…");text.setMinLines(3);text.setGravity(android.view.Gravity.TOP);text.setSaveEnabled(false);text.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(3000)});input.addView(text,new LinearLayout.LayoutParams(-1,-2));
+        automatic=new Switch(this);automatic.setText("Переводить автоматически");automatic.setTextColor(INK);automatic.setChecked(prefs.getBoolean("auto_translate",true));input.addView(automatic);
         button("Сказать фразу",this::dictate);primary("Перевести с Google",this::translate);
         translationStatus=label("Первый перевод потребует загрузки моделей");translationStatus.setTextSize(13);translationStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         LinearLayout result=card(translatePage);body=result;smallTitle("ПЕРЕВОД");output=label("");output.setHint("Здесь появится перевод");output.setHintTextColor(MUTED);output.setTextSize(23);output.setMinHeight(dp(76));output.setTextIsSelectable(true);output.setSaveEnabled(false);
@@ -111,10 +116,11 @@ public class MainActivity extends Activity {
         String[] tabNames={"Перевод","Связь с Pi","Настройки"};for(int i=0;i<3;i++){ final int index=i;Button tab=new Button(this);tab.setText(tabNames[i]);tab.setTextSize(12);tab.setAllCaps(false);nav.addView(tab,new LinearLayout.LayoutParams(0,dp(54),1));tabs.add(tab);tab.setOnClickListener(v -> showPage(index)); }
         showPage(0);
         if(prefs.getBoolean("mqtt_enabled",false) && !prefs.getBoolean("notification_asked",false))requestNotifications();
-        languages.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int pos,long id){prefs.edit().putInt("target_index",pos).apply();invalidateTranslation();loadVoices();}});
-        sourceLanguage.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int pos,long id){prefs.edit().putInt("source_index",pos).apply();invalidateTranslation();}});
+        languages.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int pos,long id){prefs.edit().putInt("target_index",pos).apply();translationInputChanged();loadVoices();}});
+        sourceLanguage.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int pos,long id){prefs.edit().putInt("source_index",pos).apply();translationInputChanged();}});
         voices.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int pos,long id){if(pos<available.size()) prefs.edit().putString(tag()+"voice",available.get(pos).getName()).apply();}});
-        text.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int c,int f){}public void onTextChanged(CharSequence s,int a,int b,int c){invalidateTranslation();}public void afterTextChanged(Editable e){}});
+        text.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int c,int f){}public void onTextChanged(CharSequence s,int a,int b,int c){translationInputChanged();}public void afterTextChanged(Editable e){}});
+        automatic.setOnCheckedChangeListener((button,enabled) -> { prefs.edit().putBoolean("auto_translate",enabled).apply();cancelAutomatic();if(enabled)translationInputChanged();else translationStatus.setText("Ручной режим · нажмите «Перевести с Google»"); });
         preferenceListener=(shared,key) -> { if(key!=null && key.startsWith("mqtt_")) runOnUiThread(this::refreshDiagnostics); };prefs.registerOnSharedPreferenceChangeListener(preferenceListener);refreshDiagnostics();
         tts=new TextToSpeech(this,resultCode -> {ready=resultCode==TextToSpeech.SUCCESS;if(ready)loadVoices();else status.setText("Системный голос недоступен");});
     }
@@ -180,7 +186,23 @@ public class MainActivity extends Activity {
         }
         if(tts.speak(output.getText().toString(),TextToSpeech.QUEUE_FLUSH,null,"preview")==TextToSpeech.ERROR) status.setText("Не удалось воспроизвести голос");
     }
+    private void cancelAutomatic() {
+        autoHandler.removeCallbacks(autoTranslate);autoPending=false;
+    }
+    private void translationInputChanged() {
+        invalidateTranslation();
+        if(automatic.isChecked() && !text.getText().toString().trim().isEmpty()) {
+            autoPending=true;
+            translationStatus.setText("Переведу после паузы во вводе…");
+            if(resumed)autoHandler.postDelayed(autoTranslate,700);
+        }
+    }
+    @Override protected void onResume() {
+        super.onResume();resumed=true;
+        if(autoPending) {autoHandler.removeCallbacks(autoTranslate);autoHandler.postDelayed(autoTranslate,700);}
+    }
     private void invalidateTranslation() {
+        cancelAutomatic();
         generation++; translating=false;
         if(tts!=null) tts.stop();
         if(output!=null) output.setText("");
@@ -188,6 +210,7 @@ public class MainActivity extends Activity {
         if(translator!=null) { translator.close(); translator=null; }
     }
     private void translate() {
+        cancelAutomatic();
         if(recording) { translationStatus.setText("Сначала остановите запись"); return; }
         if(translating) return;
         String input=text.getText().toString().trim();
@@ -239,7 +262,7 @@ public class MainActivity extends Activity {
         super.onActivityResult(request,result,data);
         if(request==20 && result==RESULT_OK && data!=null && speechLanguage==sourceLanguage.getSelectedItemPosition()) {
             ArrayList<String> phrases=data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
-            if(phrases!=null && !phrases.isEmpty()) { text.setText(phrases.get(0)); translationStatus.setText("Проверьте распознанную фразу и нажмите «Перевести»"); }
+            if(phrases!=null && !phrases.isEmpty()) { text.setText(phrases.get(0)); if(!automatic.isChecked())translationStatus.setText("Проверьте распознанную фразу и нажмите «Перевести»"); }
         }
     }
     private void record() {
@@ -270,6 +293,6 @@ public class MainActivity extends Activity {
             finally { recording=false; if(mic!=null) { try { mic.stop(); } catch(IllegalStateException ignored) {} mic.release(); } }
         },"audio-capture"); worker.start();
     }
-    @Override protected void onPause() { recording=false; if(tts!=null) tts.stop(); super.onPause(); }
+    @Override protected void onPause() {resumed=false;autoHandler.removeCallbacks(autoTranslate); recording=false; if(tts!=null) tts.stop(); super.onPause(); }
     @Override protected void onDestroy() { recording=false; invalidateTranslation(); if(tts!=null) tts.shutdown(); if(preferenceListener!=null) prefs.unregisterOnSharedPreferenceChangeListener(preferenceListener);super.onDestroy(); }
 }
