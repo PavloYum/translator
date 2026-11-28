@@ -30,7 +30,10 @@ public class MainActivity extends Activity {
     private long journalBefore=Long.MAX_VALUE,journalEpoch=0;
     private boolean journalLoading=false;
     private Button journalMore;
-    private TextView journalTitle;
+    private TextView journalTitle, modelStatus, speechModels, voiceModels;
+    private android.speech.SpeechRecognizer modelProbe;
+    private final android.os.Handler modelHandler=new android.os.Handler(android.os.Looper.getMainLooper());
+    private int currentPage=0;
     private TextView mqttStatus, diagnosticReport, connectionBadge;
     private final java.util.List<View> pages=new java.util.ArrayList<>();
     private final java.util.List<Button> tabs=new java.util.ArrayList<>();
@@ -74,7 +77,7 @@ public class MainActivity extends Activity {
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setBackgroundColor(BG);setContentView(root);
         root.setOnApplyWindowInsetsListener((view,insets) -> { view.setPadding(insets.getSystemWindowInsetLeft(),insets.getSystemWindowInsetTop(),insets.getSystemWindowInsetRight(),insets.getSystemWindowInsetBottom());return insets.consumeSystemWindowInsets(); });
         LinearLayout header=new LinearLayout(this);header.setOrientation(LinearLayout.VERTICAL);header.setPadding(dp(22),dp(16),dp(22),dp(10));root.addView(header);body=header;
-        TextView brand=label("TRANSLATOR  /  0.7");brand.setTextSize(12);brand.setLetterSpacing(.13f);brand.setTextColor(GREEN);
+        TextView brand=label("TRANSLATOR  /  0.8");brand.setTextSize(12);brand.setLetterSpacing(.13f);brand.setTextColor(GREEN);
         TextView title=label("Понимать друг друга");title.setTextSize(27);title.setTypeface(null,android.graphics.Typeface.BOLD);
         connectionBadge=label("Связь с Pi выключена");connectionBadge.setTextSize(13);
         android.widget.FrameLayout container=new android.widget.FrameLayout(this);root.addView(container,new LinearLayout.LayoutParams(-1,0,1));
@@ -118,7 +121,7 @@ public class MainActivity extends Activity {
         LinearLayout voiceCard=card(settingsPage);body=voiceCard;smallTitle("ГОЛОС ПЕРЕВОДА");voices=new Spinner(this);voiceCard.addView(voices,new LinearLayout.LayoutParams(-1,dp(52)));
         rate=slider("Скорость","rate");pitch=slider("Высота тона","pitch");button("Сбросить голосовые настройки",() -> {rate.setProgress(50);pitch.setProgress(50);});label("Голос, скорость и тон сохраняются отдельно для каждого языка.").setTextSize(13);
         LinearLayout models=card(settingsPage);body=models;smallTitle("ЯЗЫКОВЫЕ МОДЕЛИ");
-        offlineSpeech=new CheckBox(this);offlineSpeech.setText("Предпочитать офлайн-распознавание речи");offlineSpeech.setChecked(prefs.getBoolean("offline_speech",false));models.addView(offlineSpeech);offlineSpeech.setOnCheckedChangeListener((v,enabled)->{prefs.edit().putBoolean("offline_speech",enabled).apply();if(conversation)scheduleListening();});
+        offlineSpeech=new CheckBox(this);offlineSpeech.setText("Распознавать речь на устройстве (офлайн)");offlineSpeech.setChecked(prefs.getBoolean("offline_speech",false));models.addView(offlineSpeech);offlineSpeech.setOnCheckedChangeListener((v,enabled)->{prefs.edit().putBoolean("offline_speech",enabled).apply();if(conversation)scheduleListening();});
         label("Если речевой пакет Deutsch не установлен, оставьте выключенным и подключите интернет. Модели перевода и распознавания речи — разные.").setTextSize(13);
         mobileModels=new CheckBox(this);mobileModels.setText("Разрешить загрузку через мобильный интернет");mobileModels.setTextColor(INK);models.addView(mobileModels);label("По умолчанию модели загружаются через Wi-Fi. После загрузки текстовый перевод доступен без сети.").setTextSize(14);
         LinearLayout access=card(settingsPage);body=access;smallTitle("ДОСТУП К PI");
@@ -146,10 +149,19 @@ public class MainActivity extends Activity {
         iconAction("Удалить весь журнал",R.drawable.action_trash,()->confirmDelete(null));
         journalEntries=new LinearLayout(this);journalEntries.setOrientation(LinearLayout.VERTICAL);journalPage.addView(journalEntries);
         journalMore=new Button(this);journalMore.setText("Показать ещё");journalPage.addView(journalMore);journalMore.setOnClickListener(v->loadJournal(false));
+        LinearLayout modelPage=page(container);body=modelPage;
+        smallTitle("ЯЗЫКОВЫЕ ПАКЕТЫ");
+        label("Перевод текста, распознавание речи и озвучка используют разные пакеты.").setTextSize(14);
+        modelStatus=label("Проверка моделей перевода…");speechModels=label("Распознавание речи: сведения ещё не запрошены");voiceModels=label("Голоса: проверка…");
+        iconAction("Обновить список языков",R.drawable.action_refresh,this::refreshModels);
+        for(String language:new String[]{"ru","de","en"}){final String code=language;button("Загрузить перевод "+language,()->downloadTranslation(code));}
+        label("Загрузка моделей перевода использует Wi-Fi, если мобильная загрузка не разрешена в настройках.").setTextSize(13);
+        button("Запросить речевой пакет выбранного языка",()->downloadSpeech());
+        label("Речевой пакет запрашивается для языка слева. После загрузки обновите список. Системный сервис может не предоставлять список или установку пакетов.").setTextSize(13);
         body=root;status=label("Инициализация голоса…");status.setTextSize(12);status.setMaxLines(2);status.setPadding(dp(20),dp(4),dp(20),dp(4));status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         LinearLayout nav=new LinearLayout(this);nav.setPadding(dp(12),dp(6),dp(12),dp(6));root.addView(nav);
-        String[] tabNames={"Перевод","Связь с Pi","Настройки","Журнал"};for(int i=0;i<4;i++){ final int index=i;Button tab=new Button(this);tab.setText(tabNames[i]);tab.setTextSize(12);tab.setAllCaps(false);nav.addView(tab,new LinearLayout.LayoutParams(0,dp(54),1));tabs.add(tab);tab.setOnClickListener(v -> showPage(index)); }
-        showPage(0);
+        String[] tabNames={"Перевод","Pi","Настройки","Журнал","Языки"};for(int i=0;i<5;i++){ final int index=i;Button tab=new Button(this);tab.setText(tabNames[i]);tab.setTextSize(10);tab.setPadding(0,0,0,0);tab.setAllCaps(false);nav.addView(tab,new LinearLayout.LayoutParams(0,dp(54),1));tabs.add(tab);tab.setOnClickListener(v -> showPage(index)); }
+        quietViews(root);showPage(0);
         if(prefs.getBoolean("mqtt_enabled",false) && !prefs.getBoolean("notification_asked",false))requestNotifications();
         languages.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int pos,long id){prefs.edit().putInt("target_index",pos).apply();translationInputChanged();loadVoices();}});
         sourceLanguage.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int pos,long id){prefs.edit().putInt("source_index",pos).apply();translationInputChanged();}});
@@ -164,9 +176,39 @@ public class MainActivity extends Activity {
                 public void onError(String id){runOnUiThread(()->speechFinished(id,true));}
             });loadVoices();}else status.setText("Системный голос недоступен");});
     }
+    private void quietViews(View view){view.setSoundEffectsEnabled(false);if(view instanceof android.view.ViewGroup){android.view.ViewGroup group=(android.view.ViewGroup)view;for(int i=0;i<group.getChildCount();i++)quietViews(group.getChildAt(i));}}
+    private void closeModelProbe(){modelHandler.removeCallbacksAndMessages(null);if(modelProbe!=null){modelProbe.destroy();modelProbe=null;}}
+    private Intent speechIntent(){Intent intent=new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE,tags[sourceLanguage.getSelectedItemPosition()]);return intent;}
+    private void refreshModels(){
+        com.google.mlkit.common.model.RemoteModelManager.getInstance().getDownloadedModels(TranslateRemoteModel.class).addOnSuccessListener(models->{if(isDestroyed())return;Set<String> codes=new TreeSet<>();for(TranslateRemoteModel m:models)codes.add(m.getLanguage());modelStatus.setText("Перевод текста · установлены: "+(codes.isEmpty()?"нет":String.join(", ",codes)));}).addOnFailureListener(e->{if(!isDestroyed())modelStatus.setText("Не удалось прочитать модели перевода");});
+        Set<String> codes=new TreeSet<>();if(ready && tts.getVoices()!=null)for(Voice v:tts.getVoices())if(!v.isNetworkConnectionRequired())codes.add(v.getLocale().toLanguageTag());
+        voiceModels.setText("Озвучка · голоса без требования сети: "+(codes.isEmpty()?"не обнаружены / движок ещё не готов":String.join(", ",codes)));
+        closeModelProbe();
+        if(conversation){speechModels.setText("Остановите разговор, затем обновите список речевых пакетов");return;}
+        if(android.os.Build.VERSION.SDK_INT<33){speechModels.setText("Список речевых пакетов недоступен через API на этой версии Android");return;}
+        if(!android.speech.SpeechRecognizer.isOnDeviceRecognitionAvailable(this)){speechModels.setText("Речь офлайн: системный движок недоступен. Модели перевода его не заменяют.");return;}
+        try{
+            modelProbe=android.speech.SpeechRecognizer.createOnDeviceSpeechRecognizer(this);final android.speech.SpeechRecognizer probe=modelProbe;
+            speechModels.setText("Проверка речевых пакетов…");
+            modelHandler.postDelayed(()->{if(modelProbe==probe){speechModels.setText("Сервис не ответил на запрос пакетов. Их наличие неизвестно.");closeModelProbe();}},10000);
+            probe.checkRecognitionSupport(speechIntent(),getMainExecutor(),new android.speech.RecognitionSupportCallback(){
+                public void onSupportResult(android.speech.RecognitionSupport result){if(modelProbe!=probe || isDestroyed())return;speechModels.setText("Речь офлайн · установлены: "+result.getInstalledOnDeviceLanguages()+"\nВ очереди загрузки: "+result.getPendingOnDeviceLanguages()+"\nДоступны для загрузки: "+result.getSupportedOnDeviceLanguages());closeModelProbe();}
+                public void onError(int error){if(modelProbe!=probe || isDestroyed())return;speechModels.setText("Сервис не предоставил список речевых пакетов (код "+error+"). Наличие пакетов неизвестно.");closeModelProbe();}
+            });
+        }catch(RuntimeException e){closeModelProbe();speechModels.setText("Системный сервис не поддерживает проверку речевых пакетов");}
+    }
+    private void downloadTranslation(String code){
+        TranslateRemoteModel model=new TranslateRemoteModel.Builder(code).build();DownloadConditions.Builder conditions=new DownloadConditions.Builder();if(!mobileModels.isChecked())conditions.requireWifi();modelStatus.setText("Загрузка модели перевода "+code+"…");
+        com.google.mlkit.common.model.RemoteModelManager.getInstance().download(model,conditions.build()).addOnSuccessListener(v->{if(!isDestroyed())refreshModels();}).addOnFailureListener(e->{if(!isDestroyed())modelStatus.setText("Не удалось загрузить "+code+". Проверьте сеть и место.");});
+    }
+    private void downloadSpeech(){
+        if(conversation){speechModels.setText("Сначала остановите разговор");return;}
+        if(android.os.Build.VERSION.SDK_INT<33 || !android.speech.SpeechRecognizer.isOnDeviceRecognitionAvailable(this)){speechModels.setText("Установка речевых пакетов через приложение недоступна");return;}
+        closeModelProbe();try{modelProbe=android.speech.SpeechRecognizer.createOnDeviceSpeechRecognizer(this);modelProbe.triggerModelDownload(speechIntent());speechModels.setText("Запрошен речевой пакет "+tags[sourceLanguage.getSelectedItemPosition()]+". Это не подтверждение загрузки. Позже нажмите обновить.");modelHandler.postDelayed(this::closeModelProbe,30000);}catch(RuntimeException e){closeModelProbe();speechModels.setText("Сервис не принял запрос загрузки речевого пакета");}
+    }
     private void newDialogue(){dialogueSession=UUID.randomUUID().toString();prefs.edit().putString("dialogue_session",dialogueSession).apply();}
     private void savePhrase(String session,String request,long at,String from,String to,String original,String translated){
-        journalWorker.execute(()->{try{journal.save(session,request,at,from,to,original,translated);}catch(Exception e){runOnUiThread(()->{if(!isDestroyed())Toast.makeText(this,"Перевод готов, но журнал не сохранён. Проверьте свободное место.",Toast.LENGTH_LONG).show();});}});
+        journalWorker.execute(()->{try{journal.save(session,request,at,from,to,original,translated);runOnUiThread(()->{if(!isDestroyed()){prefs.edit().putString("journal_last_result","saved").apply();if(currentPage==3)loadJournal(true);}});}catch(Exception e){runOnUiThread(()->{if(!isDestroyed()){prefs.edit().putString("journal_last_result","error:"+e.getClass().getSimpleName()).apply();status.setText("Журнал не сохранён: "+e.getClass().getSimpleName()+". Проверьте свободное место.");Toast.makeText(this,"Ошибка сохранения журнала",Toast.LENGTH_LONG).show();}});}});
     }
     private void loadJournal(boolean reset){
         if(journalLoading && !reset)return;
@@ -203,7 +245,7 @@ public class MainActivity extends Activity {
     private android.graphics.drawable.GradientDrawable background(int color,int radius){android.graphics.drawable.GradientDrawable d=new android.graphics.drawable.GradientDrawable();d.setColor(color);d.setCornerRadius(dp(radius));return d;}
     private LinearLayout page(android.widget.FrameLayout container){ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);container.addView(scroll,new android.widget.FrameLayout.LayoutParams(-1,-1));pages.add(scroll);LinearLayout content=new LinearLayout(this);content.setOrientation(LinearLayout.VERTICAL);content.setPadding(dp(16),dp(6),dp(16),dp(18));scroll.addView(content);return content;}
     private LinearLayout card(LinearLayout parent){LinearLayout c=new LinearLayout(this);c.setOrientation(LinearLayout.VERTICAL);c.setPadding(dp(18),dp(12),dp(18),dp(16));c.setBackground(background(0xffffffff,22));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.bottomMargin=dp(14);parent.addView(c,lp);return c;}
-    private void showPage(int index){if(index==3 && journalEntries!=null)loadJournal(true);for(int i=0;i<pages.size();i++){pages.get(i).setVisibility(i==index?View.VISIBLE:View.GONE);Button tab=tabs.get(i);tab.setTextColor(i==index?0xffffffff:GREEN);tab.setBackground(background(i==index?GREEN:0xffe4ece7,16));tab.setSelected(i==index);}}
+    private void showPage(int index){currentPage=index;if(index==4)refreshModels();if(index==3 && journalEntries!=null)loadJournal(true);for(int i=0;i<pages.size();i++){pages.get(i).setVisibility(i==index?View.VISIBLE:View.GONE);Button tab=tabs.get(i);tab.setTextColor(i==index?0xffffffff:GREEN);tab.setBackground(background(i==index?GREEN:0xffe4ece7,16));tab.setSelected(i==index);}}
     private TextView label(String value){TextView v=new TextView(this);v.setText(value);v.setTextColor(INK);v.setTextSize(17);v.setLineSpacing(dp(3),1);v.setPadding(0,dp(6),0,dp(6));body.addView(v);return v;}
     private void smallTitle(String title){TextView v=label(title);v.setTextColor(MUTED);v.setTextSize(11);v.setLetterSpacing(.1f);}
     private void button(String title,Runnable action){makeButton(title,action,false);}
@@ -225,7 +267,7 @@ public class MainActivity extends Activity {
         LinearLayout row=null;
         if(body.getChildCount()>0){View last=body.getChildAt(body.getChildCount()-1);if("actions".equals(last.getTag()) && ((LinearLayout)last).getChildCount()<4)row=(LinearLayout)last;}
         if(row==null){row=new LinearLayout(this);row.setTag("actions");row.setOrientation(LinearLayout.HORIZONTAL);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,dp(52));lp.topMargin=dp(6);body.addView(row,lp);}
-        ImageButton button=new ImageButton(this);button.setImageResource(icon);button.setImageTintList(android.content.res.ColorStateList.valueOf(MUTED));button.setPadding(dp(12),dp(12),dp(12),dp(12));
+        ImageButton button=new ImageButton(this);button.setSoundEffectsEnabled(false);button.setImageResource(icon);button.setImageTintList(android.content.res.ColorStateList.valueOf(MUTED));button.setPadding(dp(12),dp(12),dp(12),dp(12));
         button.setContentDescription(title);button.setTooltipText(title);button.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x33246b61),background(android.graphics.Color.TRANSPARENT,24),null));
         LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(dp(48),dp(48));lp.rightMargin=dp(12);row.addView(button,lp);button.setOnClickListener(v -> action.run());return button;
     }
@@ -326,7 +368,7 @@ public class MainActivity extends Activity {
         if(conversation)pauseRecognition();
         invalidateTranslation();
         int from=sourceLanguage.getSelectedItemPosition(),to=languages.getSelectedItemPosition();
-        if(from==to) { output.setText(input); translationStatus.setText("Выбран один язык — текст без перевода");translationComplete(); return; }
+        if(from==to) { if(prefs.getBoolean("save_journal",true))savePhrase(dialogueSession,UUID.randomUUID().toString(),System.currentTimeMillis(),tags[from],tags[to],input,input);output.setText(input); translationStatus.setText("Выбран один язык — текст без перевода");translationComplete(); return; }
         final long request= generation;
         final String savedSession=dialogueSession, savedRequest=UUID.randomUUID().toString();
         final boolean saveThis=prefs.getBoolean("save_journal",true);
@@ -339,7 +381,7 @@ public class MainActivity extends Activity {
         DownloadConditions.Builder conditions=new DownloadConditions.Builder();
         if(!mobileModels.isChecked()) conditions.requireWifi();
         translationStatus.setText("Проверка/загрузка моделей… При первом запуске подключитесь к Wi-Fi.");
-        client.downloadModelIfNeeded(conditions.build()).addOnSuccessListener(v -> {
+        Runnable performTranslation=() -> {
             if(request!=generation || isDestroyed()) return;
             translationStatus.setText("Перевод…");
             final long started=android.os.SystemClock.elapsedRealtime();
@@ -349,7 +391,13 @@ public class MainActivity extends Activity {
                 if(saveThis && prefs.getBoolean("save_journal",true))savePhrase(savedSession,savedRequest,createdAt,tags[from],tags[to],input,result);
                 translationStatus.setText("Переведено на телефоне за "+(android.os.SystemClock.elapsedRealtime()-started)+" мс (без загрузки моделей)");translationComplete();
             }).addOnFailureListener(error -> translationFailed(request));
-        }).addOnFailureListener(error -> translationFailed(request));
+        };
+        com.google.mlkit.common.model.RemoteModelManager.getInstance().getDownloadedModels(TranslateRemoteModel.class).addOnSuccessListener(models->{
+            if(request!=generation || isDestroyed())return;
+            Set<String> installed=new HashSet<>();for(TranslateRemoteModel m:models)installed.add(m.getLanguage());
+            if(installed.contains(tags[from].substring(0,2)) && installed.contains(tags[to].substring(0,2)))performTranslation.run();
+            else client.downloadModelIfNeeded(conditions.build()).addOnSuccessListener(v->performTranslation.run()).addOnFailureListener(e->translationFailed(request));
+        }).addOnFailureListener(e->translationFailed(request));
     }
     private void translationFailed(long request) {
         if(request!=generation || isDestroyed()) return;
@@ -404,7 +452,12 @@ public class MainActivity extends Activity {
         if(!conversation || !resumed)return;
         final long epoch=++recognitionEpoch;
         final int language=sourceLanguage.getSelectedItemPosition();
-        recognizer=android.speech.SpeechRecognizer.createSpeechRecognizer(this);
+        try{
+            if(prefs.getBoolean("offline_speech",false)){
+                if(android.os.Build.VERSION.SDK_INT<31 || !android.speech.SpeechRecognizer.isOnDeviceRecognitionAvailable(this)){stopConversation();status.setText("Офлайн-распознаватель недоступен. Проверьте вкладку «Языки» или выключите офлайн-речь.");return;}
+                recognizer=android.speech.SpeechRecognizer.createOnDeviceSpeechRecognizer(this);
+            }else recognizer=android.speech.SpeechRecognizer.createSpeechRecognizer(this);
+        }catch(RuntimeException e){stopConversation();status.setText("Не удалось открыть сервис распознавания");return;}
         recognizer.setRecognitionListener(new android.speech.RecognitionListener(){
             private boolean current(){return conversation && resumed && epoch==recognitionEpoch;}
             public void onReadyForSpeech(Bundle b){if(current())status.setText("Слушаю: "+tags[language]+" · говорите");}
@@ -490,5 +543,5 @@ public class MainActivity extends Activity {
         },"audio-capture"); worker.start();
     }
     @Override protected void onPause() {stopConversation();activeUtterance="";resumed=false;autoHandler.removeCallbacks(autoTranslate); recording=false; if(tts!=null) tts.stop(); super.onPause(); }
-    @Override protected void onDestroy() { journalEpoch++;journalWorker.execute(()->journal.close());journalWorker.shutdown();recording=false; invalidateTranslation(); if(tts!=null) tts.shutdown(); if(preferenceListener!=null) prefs.unregisterOnSharedPreferenceChangeListener(preferenceListener);super.onDestroy(); }
+    @Override protected void onDestroy() { closeModelProbe();journalEpoch++;journalWorker.execute(()->journal.close());journalWorker.shutdown();recording=false; invalidateTranslation(); if(tts!=null) tts.shutdown(); if(preferenceListener!=null) prefs.unregisterOnSharedPreferenceChangeListener(preferenceListener);super.onDestroy(); }
 }

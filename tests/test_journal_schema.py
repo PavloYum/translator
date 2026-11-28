@@ -11,7 +11,7 @@ class JournalSchemaTests(unittest.TestCase):
     def test_persistence_order_pagination_and_session_deletion(self):
         code = SOURCE.read_text()
         schema = re.findall(r'db.execSQL\("(CREATE [^"]+)"\)', code)
-        query = re.search(r'rawQuery\("([^"]+)"', code).group(1)
+        query = re.search(r'rawQuery\("(SELECT [^"]+)"', code).group(1)
         with tempfile.TemporaryDirectory() as directory:
             filename = Path(directory) / 'dialogues.db'
             with sqlite3.connect(filename) as db:
