@@ -23,7 +23,14 @@ import java.util.*;
 /** Foreground translator: ML Kit text translation and system TTS. */
 public class MainActivity extends Activity {
     static volatile boolean UI_VISIBLE=false;
-    private LinearLayout body;
+    private LinearLayout body, journalEntries;
+    private DialogueStore journal;
+    private final java.util.concurrent.ExecutorService journalWorker=java.util.concurrent.Executors.newSingleThreadExecutor();
+    private String dialogueSession;
+    private long journalBefore=Long.MAX_VALUE,journalEpoch=0;
+    private boolean journalLoading=false;
+    private Button journalMore;
+    private TextView journalTitle;
     private TextView mqttStatus, diagnosticReport, connectionBadge;
     private final java.util.List<View> pages=new java.util.ArrayList<>();
     private final java.util.List<Button> tabs=new java.util.ArrayList<>();
@@ -61,10 +68,13 @@ public class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state); prefs=getSharedPreferences("voice",MODE_PRIVATE);
+        journal=new DialogueStore(this);
+        dialogueSession=prefs.getString("dialogue_session","");
+        if(dialogueSession.isEmpty())newDialogue();
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setBackgroundColor(BG);setContentView(root);
         root.setOnApplyWindowInsetsListener((view,insets) -> { view.setPadding(insets.getSystemWindowInsetLeft(),insets.getSystemWindowInsetTop(),insets.getSystemWindowInsetRight(),insets.getSystemWindowInsetBottom());return insets.consumeSystemWindowInsets(); });
         LinearLayout header=new LinearLayout(this);header.setOrientation(LinearLayout.VERTICAL);header.setPadding(dp(22),dp(16),dp(22),dp(10));root.addView(header);body=header;
-        TextView brand=label("TRANSLATOR  /  0.6.2");brand.setTextSize(12);brand.setLetterSpacing(.13f);brand.setTextColor(GREEN);
+        TextView brand=label("TRANSLATOR  /  0.7");brand.setTextSize(12);brand.setLetterSpacing(.13f);brand.setTextColor(GREEN);
         TextView title=label("Понимать друг друга");title.setTextSize(27);title.setTypeface(null,android.graphics.Typeface.BOLD);
         connectionBadge=label("Связь с Pi выключена");connectionBadge.setTextSize(13);
         android.widget.FrameLayout container=new android.widget.FrameLayout(this);root.addView(container,new LinearLayout.LayoutParams(-1,0,1));
@@ -124,11 +134,21 @@ public class MainActivity extends Activity {
         });
         LinearLayout lab=card(settingsPage);body=lab;smallTitle("АУДИОЛАБОРАТОРИЯ");button("Записать WAV · до 60 секунд",this::record);button("Удалить запись",() -> { if(worker!=null && worker.isAlive()) {status.setText("Сначала остановите запись");return;} File f=new File(getFilesDir(),"sample.wav");status.setText(!f.exists()||f.delete()?"Запись удалена":"Ошибка удаления"); });button("Остановить запись",() -> recording=false);
         button("О переводе и конфиденциальности",() -> new AlertDialog.Builder(this).setTitle("О приложении")
-            .setMessage("Текстовый перевод: Google Translate через ML Kit (cloud.google.com/translate). Модели загружаются из Google. SDK может передавать служебные сведения. Системный голосовой ввод может использовать облако. История текста не сохраняется. MQTT передаёт только технический отчёт. Микрофон и динамик в фоне не включаются.\n\nTHIS SERVICE MAY CONTAIN TRANSLATIONS POWERED BY GOOGLE. GOOGLE DISCLAIMS ALL WARRANTIES RELATED TO THE TRANSLATIONS, EXPRESS OR IMPLIED, INCLUDING ANY WARRANTIES OF ACCURACY, RELIABILITY, AND ANY IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.")
+            .setMessage("Текстовый перевод: Google Translate через ML Kit (cloud.google.com/translate). Модели загружаются из Google. SDK может передавать служебные сведения. Системный голосовой ввод может использовать облако. При включённом журнале фразы и переводы сохраняются только в закрытой базе приложения. Их можно удалить во вкладке «Журнал». Аудио разговора не сохраняется. MQTT передаёт только технический отчёт. Микрофон и динамик в фоне не включаются.\n\nTHIS SERVICE MAY CONTAIN TRANSLATIONS POWERED BY GOOGLE. GOOGLE DISCLAIMS ALL WARRANTIES RELATED TO THE TRANSLATIONS, EXPRESS OR IMPLIED, INCLUDING ANY WARRANTIES OF ACCURACY, RELIABILITY, AND ANY IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.")
             .setPositiveButton("Понятно",null).show());
+        LinearLayout journalPage=page(container);body=journalPage;
+        smallTitle("ЖУРНАЛ ДИАЛОГОВ");journalTitle=label("Фразы сохраняются на этом телефоне");
+        CheckBox saveJournal=new CheckBox(this);saveJournal.setText("Сохранять диалог");saveJournal.setChecked(prefs.getBoolean("save_journal",true));journalPage.addView(saveJournal);
+        saveJournal.setOnCheckedChangeListener((v,enabled)->prefs.edit().putBoolean("save_journal",enabled).apply());
+        label("Исходная фраза, перевод, языки и время. Новые записи сверху. Записи остаются после закрытия приложения. Аудио не сохраняется.").setTextSize(13);
+        iconAction("Новый диалог",R.drawable.action_phrase,()->{stopConversation();invalidateTranslation();text.setText("");newDialogue();Toast.makeText(this,"Начат новый диалог",Toast.LENGTH_SHORT).show();showPage(0);});
+        iconAction("Обновить журнал",R.drawable.action_refresh,()->loadJournal(true));
+        iconAction("Удалить весь журнал",R.drawable.action_trash,()->confirmDelete(null));
+        journalEntries=new LinearLayout(this);journalEntries.setOrientation(LinearLayout.VERTICAL);journalPage.addView(journalEntries);
+        journalMore=new Button(this);journalMore.setText("Показать ещё");journalPage.addView(journalMore);journalMore.setOnClickListener(v->loadJournal(false));
         body=root;status=label("Инициализация голоса…");status.setTextSize(12);status.setMaxLines(2);status.setPadding(dp(20),dp(4),dp(20),dp(4));status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         LinearLayout nav=new LinearLayout(this);nav.setPadding(dp(12),dp(6),dp(12),dp(6));root.addView(nav);
-        String[] tabNames={"Перевод","Связь с Pi","Настройки"};for(int i=0;i<3;i++){ final int index=i;Button tab=new Button(this);tab.setText(tabNames[i]);tab.setTextSize(12);tab.setAllCaps(false);nav.addView(tab,new LinearLayout.LayoutParams(0,dp(54),1));tabs.add(tab);tab.setOnClickListener(v -> showPage(index)); }
+        String[] tabNames={"Перевод","Связь с Pi","Настройки","Журнал"};for(int i=0;i<4;i++){ final int index=i;Button tab=new Button(this);tab.setText(tabNames[i]);tab.setTextSize(12);tab.setAllCaps(false);nav.addView(tab,new LinearLayout.LayoutParams(0,dp(54),1));tabs.add(tab);tab.setOnClickListener(v -> showPage(index)); }
         showPage(0);
         if(prefs.getBoolean("mqtt_enabled",false) && !prefs.getBoolean("notification_asked",false))requestNotifications();
         languages.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int pos,long id){prefs.edit().putInt("target_index",pos).apply();translationInputChanged();loadVoices();}});
@@ -144,11 +164,46 @@ public class MainActivity extends Activity {
                 public void onError(String id){runOnUiThread(()->speechFinished(id,true));}
             });loadVoices();}else status.setText("Системный голос недоступен");});
     }
+    private void newDialogue(){dialogueSession=UUID.randomUUID().toString();prefs.edit().putString("dialogue_session",dialogueSession).apply();}
+    private void savePhrase(String session,String request,long at,String from,String to,String original,String translated){
+        journalWorker.execute(()->{try{journal.save(session,request,at,from,to,original,translated);}catch(Exception e){runOnUiThread(()->{if(!isDestroyed())Toast.makeText(this,"Перевод готов, но журнал не сохранён. Проверьте свободное место.",Toast.LENGTH_LONG).show();});}});
+    }
+    private void loadJournal(boolean reset){
+        if(journalLoading && !reset)return;
+        if(reset){journalBefore=Long.MAX_VALUE;journalEntries.removeAllViews();}
+        final long epoch=++journalEpoch,before=journalBefore;journalLoading=true;journalMore.setEnabled(false);
+        journalWorker.execute(()->{
+            try{java.util.List<DialogueStore.Entry> entries=journal.page(before);
+                runOnUiThread(()->{if(isDestroyed() || epoch!=journalEpoch)return;journalLoading=false;journalMore.setEnabled(true);
+                    LinearLayout previous=body;
+                    for(DialogueStore.Entry entry:entries){body=card(journalEntries);
+                        String when=java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT,java.text.DateFormat.SHORT).format(new Date(entry.created));
+                        smallTitle(when+" · "+entry.from+" → "+entry.to);
+                        label((entry.session.equals(dialogueSession)?"Текущий диалог":"Диалог")+" · "+entry.session.substring(0,8)).setTextSize(12);
+                        TextView original=label(entry.original);original.setTextIsSelectable(true);original.setSaveEnabled(false);
+                        TextView translated=label(entry.translated);translated.setTextColor(GREEN);translated.setTextIsSelectable(true);translated.setSaveEnabled(false);
+                        iconAction("Копировать фразу и перевод",R.drawable.action_copy,()->{((android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(android.content.ClipData.newPlainText("Диалог",entry.original+"\n"+entry.translated));Toast.makeText(this,"Скопировано",Toast.LENGTH_SHORT).show();});
+                        iconAction("Удалить этот диалог",R.drawable.action_trash,()->confirmDelete(entry.session));
+                        journalBefore=entry.id;
+                    }
+                    body=previous;journalMore.setVisibility(entries.size()==50?View.VISIBLE:View.GONE);
+                    journalTitle.setText(journalEntries.getChildCount()==0?"Пока нет сохранённых фраз":"Сохранённые фразы · новые сверху");
+                });
+            }catch(Exception e){runOnUiThread(()->{if(!isDestroyed() && epoch==journalEpoch){journalLoading=false;journalMore.setEnabled(true);journalTitle.setText("Не удалось открыть журнал. Попробуйте обновить.");}});}
+        });
+    }
+    private void confirmDelete(String session){
+        new AlertDialog.Builder(this).setTitle(session==null?"Удалить весь журнал?":"Удалить этот диалог?").setMessage("Сохранённые фразы и переводы будут удалены с этого телефона.")
+            .setNegativeButton("Отмена",null).setPositiveButton("Удалить",(d,w)->{
+                stopConversation();invalidateTranslation();
+                journalWorker.execute(()->{try{journal.delete(session);runOnUiThread(()->{if(!isDestroyed()){if(session==null || session.equals(dialogueSession))newDialogue();loadJournal(true);}});}catch(Exception e){runOnUiThread(()->{if(!isDestroyed())Toast.makeText(this,"Не удалось удалить журнал",Toast.LENGTH_LONG).show();});}});
+            }).show();
+    }
     private int dp(int value){return Math.round(value*getResources().getDisplayMetrics().density);}
     private android.graphics.drawable.GradientDrawable background(int color,int radius){android.graphics.drawable.GradientDrawable d=new android.graphics.drawable.GradientDrawable();d.setColor(color);d.setCornerRadius(dp(radius));return d;}
     private LinearLayout page(android.widget.FrameLayout container){ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);container.addView(scroll,new android.widget.FrameLayout.LayoutParams(-1,-1));pages.add(scroll);LinearLayout content=new LinearLayout(this);content.setOrientation(LinearLayout.VERTICAL);content.setPadding(dp(16),dp(6),dp(16),dp(18));scroll.addView(content);return content;}
     private LinearLayout card(LinearLayout parent){LinearLayout c=new LinearLayout(this);c.setOrientation(LinearLayout.VERTICAL);c.setPadding(dp(18),dp(12),dp(18),dp(16));c.setBackground(background(0xffffffff,22));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.bottomMargin=dp(14);parent.addView(c,lp);return c;}
-    private void showPage(int index){for(int i=0;i<pages.size();i++){pages.get(i).setVisibility(i==index?View.VISIBLE:View.GONE);Button tab=tabs.get(i);tab.setTextColor(i==index?0xffffffff:GREEN);tab.setBackground(background(i==index?GREEN:0xffe4ece7,16));tab.setSelected(i==index);}}
+    private void showPage(int index){if(index==3 && journalEntries!=null)loadJournal(true);for(int i=0;i<pages.size();i++){pages.get(i).setVisibility(i==index?View.VISIBLE:View.GONE);Button tab=tabs.get(i);tab.setTextColor(i==index?0xffffffff:GREEN);tab.setBackground(background(i==index?GREEN:0xffe4ece7,16));tab.setSelected(i==index);}}
     private TextView label(String value){TextView v=new TextView(this);v.setText(value);v.setTextColor(INK);v.setTextSize(17);v.setLineSpacing(dp(3),1);v.setPadding(0,dp(6),0,dp(6));body.addView(v);return v;}
     private void smallTitle(String title){TextView v=label(title);v.setTextColor(MUTED);v.setTextSize(11);v.setLetterSpacing(.1f);}
     private void button(String title,Runnable action){makeButton(title,action,false);}
@@ -273,6 +328,9 @@ public class MainActivity extends Activity {
         int from=sourceLanguage.getSelectedItemPosition(),to=languages.getSelectedItemPosition();
         if(from==to) { output.setText(input); translationStatus.setText("Выбран один язык — текст без перевода");translationComplete(); return; }
         final long request= generation;
+        final String savedSession=dialogueSession, savedRequest=UUID.randomUUID().toString();
+        final boolean saveThis=prefs.getBoolean("save_journal",true);
+        final long createdAt=System.currentTimeMillis();
         translating=true;
         autoHandler.postDelayed(()->{if(request==generation && translating){invalidateTranslation();stopConversation();translationStatus.setText("Истекло время ожидания моделей/перевода. Проверьте Wi-Fi или разрешите загрузку моделей через мобильную сеть в настройках.");}},90000);
         Translator client=Translation.getClient(new TranslatorOptions.Builder()
@@ -288,6 +346,7 @@ public class MainActivity extends Activity {
             client.translate(input).addOnSuccessListener(result -> {
                 if(request!=generation || isDestroyed()) return;
                 output.setText(result); translating=false;
+                if(saveThis && prefs.getBoolean("save_journal",true))savePhrase(savedSession,savedRequest,createdAt,tags[from],tags[to],input,result);
                 translationStatus.setText("Переведено на телефоне за "+(android.os.SystemClock.elapsedRealtime()-started)+" мс (без загрузки моделей)");translationComplete();
             }).addOnFailureListener(error -> translationFailed(request));
         }).addOnFailureListener(error -> translationFailed(request));
@@ -431,5 +490,5 @@ public class MainActivity extends Activity {
         },"audio-capture"); worker.start();
     }
     @Override protected void onPause() {stopConversation();activeUtterance="";resumed=false;autoHandler.removeCallbacks(autoTranslate); recording=false; if(tts!=null) tts.stop(); super.onPause(); }
-    @Override protected void onDestroy() { recording=false; invalidateTranslation(); if(tts!=null) tts.shutdown(); if(preferenceListener!=null) prefs.unregisterOnSharedPreferenceChangeListener(preferenceListener);super.onDestroy(); }
+    @Override protected void onDestroy() { journalEpoch++;journalWorker.execute(()->journal.close());journalWorker.shutdown();recording=false; invalidateTranslation(); if(tts!=null) tts.shutdown(); if(preferenceListener!=null) prefs.unregisterOnSharedPreferenceChangeListener(preferenceListener);super.onDestroy(); }
 }
