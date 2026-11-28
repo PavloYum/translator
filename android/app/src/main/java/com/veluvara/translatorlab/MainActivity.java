@@ -34,6 +34,12 @@ public class MainActivity extends Activity {
     private android.speech.SpeechRecognizer modelProbe;
     private final android.os.Handler modelHandler=new android.os.Handler(android.os.Looper.getMainLooper());
     private int currentPage=0;
+    private LinearLayout languageRows, pickerRows;
+    private Button sourceChoice,targetChoice;
+    private Spinner pickerTarget;
+    private final Set<String> installedTranslations=new HashSet<>(), downloadingTranslations=new HashSet<>();
+    private boolean translationModelsKnown=false;
+    private final String[] languageNames={"Русский","Немецкий","Английский"};
     private TextView mqttStatus, diagnosticReport, connectionBadge;
     private final java.util.List<View> pages=new java.util.ArrayList<>();
     private final java.util.List<Button> tabs=new java.util.ArrayList<>();
@@ -77,7 +83,7 @@ public class MainActivity extends Activity {
         LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setBackgroundColor(BG);setContentView(root);
         root.setOnApplyWindowInsetsListener((view,insets) -> { view.setPadding(insets.getSystemWindowInsetLeft(),insets.getSystemWindowInsetTop(),insets.getSystemWindowInsetRight(),insets.getSystemWindowInsetBottom());return insets.consumeSystemWindowInsets(); });
         LinearLayout header=new LinearLayout(this);header.setOrientation(LinearLayout.VERTICAL);header.setPadding(dp(22),dp(16),dp(22),dp(10));root.addView(header);body=header;
-        TextView brand=label("TRANSLATOR  /  0.8");brand.setTextSize(12);brand.setLetterSpacing(.13f);brand.setTextColor(GREEN);
+        TextView brand=label("TRANSLATOR  /  0.8.1");brand.setTextSize(12);brand.setLetterSpacing(.13f);brand.setTextColor(GREEN);
         TextView title=label("Понимать друг друга");title.setTextSize(27);title.setTypeface(null,android.graphics.Typeface.BOLD);
         connectionBadge=label("Связь с Pi выключена");connectionBadge.setTextSize(13);
         android.widget.FrameLayout container=new android.widget.FrameLayout(this);root.addView(container,new LinearLayout.LayoutParams(-1,0,1));
@@ -87,9 +93,12 @@ public class MainActivity extends Activity {
         LinearLayout pair=new LinearLayout(this);pair.setOrientation(LinearLayout.HORIZONTAL);direction.addView(pair);
         String[] names={"Русский","Deutsch","English"};
         sourceLanguage=new Spinner(this);languages=new Spinner(this);
-        for(Spinner spinner:new Spinner[]{sourceLanguage,languages}) { spinner.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,names));pair.addView(spinner,new LinearLayout.LayoutParams(0,dp(52),1)); }
+        for(Spinner spinner:new Spinner[]{sourceLanguage,languages}) { spinner.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,names));spinner.setVisibility(View.GONE);direction.addView(spinner,new LinearLayout.LayoutParams(0,0)); }
         sourceLanguage.setSelection(prefs.getInt("source_index",0));languages.setSelection(prefs.getInt("target_index",1));
-        button("⇄  Поменять языки", () -> { int a=sourceLanguage.getSelectedItemPosition(),b=languages.getSelectedItemPosition();sourceLanguage.setSelection(b);languages.setSelection(a); });
+        sourceChoice=new Button(this);targetChoice=new Button(this);
+        for(Button choice:new Button[]{sourceChoice,targetChoice}){choice.setAllCaps(false);choice.setTextSize(16);choice.setTextColor(INK);choice.setBackground(background(0xffeef0fa,24));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,dp(52),1);lp.setMargins(dp(3),0,dp(3),0);pair.addView(choice,lp);}
+        updateLanguageChoices();sourceChoice.setOnClickListener(v->openLanguagePicker(sourceLanguage,"Язык речи"));targetChoice.setOnClickListener(v->openLanguagePicker(languages,"Язык перевода"));
+        button("⇄  Поменять языки", () -> { int a=sourceLanguage.getSelectedItemPosition(),b=languages.getSelectedItemPosition();sourceLanguage.setSelection(b);languages.setSelection(a);applyLanguageSelection(); });
         LinearLayout input=card(translatePage);body=input;smallTitle("ВАША ФРАЗА");
         text=new EditText(this);text.setTextSize(19);text.setTextColor(INK);text.setHint("Введите текст или скажите фразу…");text.setMinLines(3);text.setGravity(android.view.Gravity.TOP);text.setSaveEnabled(false);text.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(3000)});input.addView(text,new LinearLayout.LayoutParams(-1,-2));
         automatic=new Switch(this);automatic.setText("Переводить автоматически");automatic.setTextColor(INK);automatic.setChecked(prefs.getBoolean("auto_translate",true));input.addView(automatic);
@@ -154,17 +163,19 @@ public class MainActivity extends Activity {
         label("Перевод текста, распознавание речи и озвучка используют разные пакеты.").setTextSize(14);
         modelStatus=label("Проверка моделей перевода…");speechModels=label("Распознавание речи: сведения ещё не запрошены");voiceModels=label("Голоса: проверка…");
         iconAction("Обновить список языков",R.drawable.action_refresh,this::refreshModels);
-        for(String language:new String[]{"ru","de","en"}){final String code=language;button("Загрузить перевод "+language,()->downloadTranslation(code));}
+        smallTitle("ЯЗЫК ПЕРЕВОДА");
+        languageRows=new LinearLayout(this);languageRows.setOrientation(LinearLayout.VERTICAL);modelPage.addView(languageRows);renderLanguageRows(languageRows,languages);
         label("Загрузка моделей перевода использует Wi-Fi, если мобильная загрузка не разрешена в настройках.").setTextSize(13);
         button("Запросить речевой пакет выбранного языка",()->downloadSpeech());
         label("Речевой пакет запрашивается для языка слева. После загрузки обновите список. Системный сервис может не предоставлять список или установку пакетов.").setTextSize(13);
         body=root;status=label("Инициализация голоса…");status.setTextSize(12);status.setMaxLines(2);status.setPadding(dp(20),dp(4),dp(20),dp(4));status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-        LinearLayout nav=new LinearLayout(this);nav.setPadding(dp(12),dp(6),dp(12),dp(6));root.addView(nav);
-        String[] tabNames={"Перевод","Pi","Настройки","Журнал","Языки"};for(int i=0;i<5;i++){ final int index=i;Button tab=new Button(this);tab.setText(tabNames[i]);tab.setTextSize(10);tab.setPadding(0,0,0,0);tab.setAllCaps(false);nav.addView(tab,new LinearLayout.LayoutParams(0,dp(54),1));tabs.add(tab);tab.setOnClickListener(v -> showPage(index)); }
+        View divider=new View(this);divider.setBackgroundColor(0xffdce4df);root.addView(divider,new LinearLayout.LayoutParams(-1,dp(1)));
+        LinearLayout nav=new LinearLayout(this);nav.setBackgroundColor(0xffffffff);nav.setPadding(dp(4),0,dp(4),0);root.addView(nav);
+        String[] tabNames={"Перевод","Pi","Настройки","Журнал","Языки"};for(int i=0;i<5;i++){ final int index=i;Button tab=new Button(this);tab.setText(tabNames[i]);tab.setTextSize(11);tab.setPadding(0,0,0,0);tab.setMinWidth(0);tab.setMinimumWidth(0);tab.setAllCaps(false);nav.addView(tab,new LinearLayout.LayoutParams(0,dp(54),1));tabs.add(tab);tab.setOnClickListener(v -> showPage(index)); }
         quietViews(root);showPage(0);
         if(prefs.getBoolean("mqtt_enabled",false) && !prefs.getBoolean("notification_asked",false))requestNotifications();
-        languages.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int pos,long id){prefs.edit().putInt("target_index",pos).apply();translationInputChanged();loadVoices();}});
-        sourceLanguage.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int pos,long id){prefs.edit().putInt("source_index",pos).apply();translationInputChanged();}});
+        languages.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int pos,long id){prefs.edit().putInt("target_index",pos).apply();updateLanguageChoices();translationInputChanged();loadVoices();}});
+        sourceLanguage.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int pos,long id){prefs.edit().putInt("source_index",pos).apply();updateLanguageChoices();translationInputChanged();}});
         voices.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int pos,long id){if(pos<available.size()) prefs.edit().putString(tag()+"voice",available.get(pos).getName()).apply();}});
         text.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int a,int c,int f){}public void onTextChanged(CharSequence s,int a,int b,int c){translationInputChanged();}public void afterTextChanged(Editable e){}});
         automatic.setOnCheckedChangeListener((button,enabled) -> { prefs.edit().putBoolean("auto_translate",enabled).apply();cancelAutomatic();if(enabled)translationInputChanged();else {stopConversation();translationStatus.setText("Ручной режим · нажмите «Перевести с Google»");} });
@@ -176,11 +187,42 @@ public class MainActivity extends Activity {
                 public void onError(String id){runOnUiThread(()->speechFinished(id,true));}
             });loadVoices();}else status.setText("Системный голос недоступен");});
     }
+    private void applyLanguageSelection(){
+        prefs.edit().putInt("source_index",sourceLanguage.getSelectedItemPosition()).putInt("target_index",languages.getSelectedItemPosition()).apply();
+        updateLanguageChoices();translationInputChanged();loadVoices();
+    }
+    private void updateLanguageChoices(){
+        if(sourceChoice==null || targetChoice==null)return;
+        sourceChoice.setText(languageNames[sourceLanguage.getSelectedItemPosition()]+" ▾");targetChoice.setText(languageNames[languages.getSelectedItemPosition()]+" ▾");redrawLanguages();
+    }
+    private void redrawLanguages(){if(languageRows!=null)renderLanguageRows(languageRows,languages);if(pickerRows!=null && pickerTarget!=null)renderLanguageRows(pickerRows,pickerTarget);}
+    private void openLanguagePicker(Spinner target,String title){
+        LinearLayout content=new LinearLayout(this);content.setOrientation(LinearLayout.VERTICAL);content.setPadding(dp(12),dp(16),dp(12),dp(16));content.setBackgroundColor(0xfffaf9ff);
+        TextView hint=new TextView(this);hint.setText("Доступные языки · пакет перевода справа");hint.setTextColor(MUTED);hint.setPadding(dp(12),0,dp(12),dp(14));content.addView(hint);
+        pickerRows=new LinearLayout(this);pickerRows.setOrientation(LinearLayout.VERTICAL);pickerTarget=target;content.addView(pickerRows);renderLanguageRows(pickerRows,target);
+        new AlertDialog.Builder(this).setTitle(title).setView(content).setPositiveButton("Готово",null).setOnDismissListener(d->{pickerRows=null;pickerTarget=null;}).show();
+        refreshModels();
+    }
+    private void renderLanguageRows(LinearLayout parent,Spinner target){
+        parent.removeAllViews();int selected=target.getSelectedItemPosition();
+        // Current selection first, then the remaining supported languages.
+        for(int order=0;order<tags.length;order++){
+            final int index=order==0?selected:(order<=selected?order-1:order);
+            final String code=tags[index].substring(0,2);boolean chosen=index==selected;
+            LinearLayout row=new LinearLayout(this);row.setGravity(android.view.Gravity.CENTER_VERTICAL);row.setPadding(dp(6),0,dp(6),0);row.setBackground(background(chosen?0xffdfe4fa:0x00000000,28));LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,dp(60));rp.bottomMargin=dp(6);parent.addView(row,rp);
+            Button select=new Button(this);select.setAllCaps(false);select.setText((chosen?"✓   ":"     ")+languageNames[index]);select.setTextSize(19);select.setTextColor(INK);select.setGravity(android.view.Gravity.CENTER_VERTICAL|android.view.Gravity.START);select.setPadding(dp(12),0,0,0);select.setBackgroundColor(android.graphics.Color.TRANSPARENT);select.setContentDescription(languageNames[index]+(chosen?", выбран":""));select.setSelected(chosen);select.setSoundEffectsEnabled(false);row.addView(select,new LinearLayout.LayoutParams(0,-1,1));select.setOnClickListener(v->{target.setSelection(index);applyLanguageSelection();});
+            ImageButton download=new ImageButton(this);boolean installed=installedTranslations.contains(code),pending=downloadingTranslations.contains(code);
+            download.setImageResource(installed?R.drawable.action_check:pending?R.drawable.action_refresh:R.drawable.action_download);download.setImageTintList(android.content.res.ColorStateList.valueOf(MUTED));download.setPadding(dp(12),dp(12),dp(12),dp(12));download.setBackgroundColor(android.graphics.Color.TRANSPARENT);download.setSoundEffectsEnabled(false);
+            String description=installed?"Пакет перевода загружен":pending?"Загрузка или ожидание Wi-Fi":translationModelsKnown?"Скачать пакет перевода":"Проверить наличие пакета";
+            download.setContentDescription(languageNames[index]+": "+description);download.setTooltipText(description);row.addView(download,new LinearLayout.LayoutParams(dp(48),dp(48)));
+            download.setOnClickListener(v->{if(installed || pending)Toast.makeText(this,description,Toast.LENGTH_SHORT).show();else if(!translationModelsKnown)refreshModels();else downloadTranslation(code);});
+        }
+    }
     private void quietViews(View view){view.setSoundEffectsEnabled(false);if(view instanceof android.view.ViewGroup){android.view.ViewGroup group=(android.view.ViewGroup)view;for(int i=0;i<group.getChildCount();i++)quietViews(group.getChildAt(i));}}
     private void closeModelProbe(){modelHandler.removeCallbacksAndMessages(null);if(modelProbe!=null){modelProbe.destroy();modelProbe=null;}}
     private Intent speechIntent(){Intent intent=new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE,tags[sourceLanguage.getSelectedItemPosition()]);return intent;}
     private void refreshModels(){
-        com.google.mlkit.common.model.RemoteModelManager.getInstance().getDownloadedModels(TranslateRemoteModel.class).addOnSuccessListener(models->{if(isDestroyed())return;Set<String> codes=new TreeSet<>();for(TranslateRemoteModel m:models)codes.add(m.getLanguage());modelStatus.setText("Перевод текста · установлены: "+(codes.isEmpty()?"нет":String.join(", ",codes)));}).addOnFailureListener(e->{if(!isDestroyed())modelStatus.setText("Не удалось прочитать модели перевода");});
+        com.google.mlkit.common.model.RemoteModelManager.getInstance().getDownloadedModels(TranslateRemoteModel.class).addOnSuccessListener(models->{if(isDestroyed())return;Set<String> codes=new TreeSet<>();for(TranslateRemoteModel m:models)codes.add(m.getLanguage());installedTranslations.clear();installedTranslations.addAll(codes);translationModelsKnown=true;redrawLanguages();modelStatus.setText("Пакеты перевода · ✓ загружен · ↓ скачать");}).addOnFailureListener(e->{if(!isDestroyed())modelStatus.setText("Не удалось прочитать модели перевода");});
         Set<String> codes=new TreeSet<>();if(ready && tts.getVoices()!=null)for(Voice v:tts.getVoices())if(!v.isNetworkConnectionRequired())codes.add(v.getLocale().toLanguageTag());
         voiceModels.setText("Озвучка · голоса без требования сети: "+(codes.isEmpty()?"не обнаружены / движок ещё не готов":String.join(", ",codes)));
         closeModelProbe();
@@ -198,8 +240,8 @@ public class MainActivity extends Activity {
         }catch(RuntimeException e){closeModelProbe();speechModels.setText("Системный сервис не поддерживает проверку речевых пакетов");}
     }
     private void downloadTranslation(String code){
-        TranslateRemoteModel model=new TranslateRemoteModel.Builder(code).build();DownloadConditions.Builder conditions=new DownloadConditions.Builder();if(!mobileModels.isChecked())conditions.requireWifi();modelStatus.setText("Загрузка модели перевода "+code+"…");
-        com.google.mlkit.common.model.RemoteModelManager.getInstance().download(model,conditions.build()).addOnSuccessListener(v->{if(!isDestroyed())refreshModels();}).addOnFailureListener(e->{if(!isDestroyed())modelStatus.setText("Не удалось загрузить "+code+". Проверьте сеть и место.");});
+        if(downloadingTranslations.contains(code))return;downloadingTranslations.add(code);redrawLanguages();TranslateRemoteModel model=new TranslateRemoteModel.Builder(code).build();DownloadConditions.Builder conditions=new DownloadConditions.Builder();if(!mobileModels.isChecked())conditions.requireWifi();modelStatus.setText("Загрузка модели перевода "+code+"…");
+        com.google.mlkit.common.model.RemoteModelManager.getInstance().download(model,conditions.build()).addOnSuccessListener(v->{if(!isDestroyed()){downloadingTranslations.remove(code);refreshModels();}}).addOnFailureListener(e->{if(!isDestroyed()){downloadingTranslations.remove(code);redrawLanguages();modelStatus.setText("Не удалось загрузить "+code+". Проверьте сеть и место.");Toast.makeText(this,"Не удалось загрузить модель "+code,Toast.LENGTH_LONG).show();}});
     }
     private void downloadSpeech(){
         if(conversation){speechModels.setText("Сначала остановите разговор");return;}
@@ -245,7 +287,13 @@ public class MainActivity extends Activity {
     private android.graphics.drawable.GradientDrawable background(int color,int radius){android.graphics.drawable.GradientDrawable d=new android.graphics.drawable.GradientDrawable();d.setColor(color);d.setCornerRadius(dp(radius));return d;}
     private LinearLayout page(android.widget.FrameLayout container){ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);container.addView(scroll,new android.widget.FrameLayout.LayoutParams(-1,-1));pages.add(scroll);LinearLayout content=new LinearLayout(this);content.setOrientation(LinearLayout.VERTICAL);content.setPadding(dp(16),dp(6),dp(16),dp(18));scroll.addView(content);return content;}
     private LinearLayout card(LinearLayout parent){LinearLayout c=new LinearLayout(this);c.setOrientation(LinearLayout.VERTICAL);c.setPadding(dp(18),dp(12),dp(18),dp(16));c.setBackground(background(0xffffffff,22));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.bottomMargin=dp(14);parent.addView(c,lp);return c;}
-    private void showPage(int index){currentPage=index;if(index==4)refreshModels();if(index==3 && journalEntries!=null)loadJournal(true);for(int i=0;i<pages.size();i++){pages.get(i).setVisibility(i==index?View.VISIBLE:View.GONE);Button tab=tabs.get(i);tab.setTextColor(i==index?0xffffffff:GREEN);tab.setBackground(background(i==index?GREEN:0xffe4ece7,16));tab.setSelected(i==index);}}
+    private void showPage(int index){currentPage=index;if(index==4)refreshModels();if(index==3 && journalEntries!=null)loadJournal(true);for(int i=0;i<pages.size();i++){pages.get(i).setVisibility(i==index?View.VISIBLE:View.GONE);Button tab=tabs.get(i);tab.setTextColor(i==index?GREEN:MUTED);tab.setTypeface(null,i==index?android.graphics.Typeface.BOLD:android.graphics.Typeface.NORMAL);tab.setBackground(tabBackground(i==index));tab.setSelected(i==index);tab.setContentDescription(tab.getText()+(i==index?", выбранная вкладка":", вкладка"));}}
+    private android.graphics.drawable.Drawable tabBackground(boolean selected){
+        android.graphics.drawable.GradientDrawable line=background(selected?GREEN:android.graphics.Color.TRANSPARENT,2);
+        android.graphics.drawable.LayerDrawable layers=new android.graphics.drawable.LayerDrawable(new android.graphics.drawable.Drawable[]{background(0xffffffff,0),line});
+        layers.setLayerHeight(1,dp(3));layers.setLayerGravity(1,android.view.Gravity.BOTTOM);layers.setLayerInset(1,dp(8),0,dp(8),0);
+        return new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x22246b61),layers,null);
+    }
     private TextView label(String value){TextView v=new TextView(this);v.setText(value);v.setTextColor(INK);v.setTextSize(17);v.setLineSpacing(dp(3),1);v.setPadding(0,dp(6),0,dp(6));body.addView(v);return v;}
     private void smallTitle(String title){TextView v=label(title);v.setTextColor(MUTED);v.setTextSize(11);v.setLetterSpacing(.1f);}
     private void button(String title,Runnable action){makeButton(title,action,false);}

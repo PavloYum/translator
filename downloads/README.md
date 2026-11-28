@@ -2,6 +2,7 @@
 
 | Версия | Содержимое | Скачать |
 |---|---|---|
+| 0.8.1-preview | Новый список выбора и загрузки языков | [APK](https://github.com/PavloYum/translator/releases/download/v0.8.1-preview/translator-0.8.1-preview.apk) |
 | 0.8.0-preview | Языковые пакеты, офлайн-речь, исправление журнала | [APK](https://github.com/PavloYum/translator/releases/download/v0.8.0-preview/translator-0.8.0-preview.apk) |
 | 0.7.0-preview | Локальный журнал диалогов | [APK](https://github.com/PavloYum/translator/releases/download/v0.7.0-preview/translator-0.7.0-preview.apk) |
 | 0.6.2-preview | Исправление смены языка и распознавания речи | [APK](https://github.com/PavloYum/translator/releases/download/v0.6.2-preview/translator-0.6.2-preview.apk) |
